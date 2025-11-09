@@ -1,9 +1,11 @@
 pub mod detection;
+pub mod dictionary;
 pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
 
 pub use detection::{DetInferenceOutput, DetInferenceSession};
+pub use dictionary::{DictionaryError, RecDictionary};
 pub use postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
     DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError, DetScaleRounding,
