@@ -1,5 +1,7 @@
+pub mod detection;
 pub mod preprocessing;
 
+pub use detection::{DetInferenceOutput, DetInferenceSession};
 pub use preprocessing::{
     DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, PreprocessedDetInput,
 };
@@ -103,6 +105,7 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    #[ignore = "dummy inference takes >60s; run with `cargo test -- --ignored`"]
     fn dbnet_dummy_inference_runs_successfully() -> TractResult<()> {
         let model_path = Path::new("models/ppocrv5/det.onnx");
         assert!(
@@ -129,6 +132,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "dummy inference takes >60s; run with `cargo test -- --ignored`"]
     fn svtr_dummy_inference_runs_successfully() -> TractResult<()> {
         let model_path = Path::new("models/ppocrv5/rec.onnx");
         assert!(
