@@ -124,6 +124,7 @@ fn main() -> Result<(), OcrError> {
 - 2025-11-09: 公開エラー型 `OcrError` (`task-api-005`) を整備し、エラーパスを統一。
 - 2025-11-09: ドキュメント整備タスク `task-doc-001` を完了。READMEの再構成と英語版ドキュメントを追加。
 - 2025-11-09: 公開APIの Rustdoc コメント (`task-doc-002`) を整備し、`cargo doc` で生成物を確認。
+- 2025-11-09: Cargo メタデータ (`task-doc-003`) を整備し、`cargo package --no-verify` で公開準備を確認。
 
 ## コントリビューション
 

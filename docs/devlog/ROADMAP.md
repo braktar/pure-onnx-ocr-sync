@@ -69,5 +69,5 @@
 | :--------- | :------------- | :----------------------------------------------------------------- | :------------------------------ |
 | `[x]`      | `task-doc-001` | `README.md` の作成 (インストール、クイックスタート、API概要)       | `feature/018-doc-readme`        |
 | `[x]`      | `task-doc-002` | `lib.rs` のドキュメントコメント (`cargo doc`) 整備                 | `feature/019-doc-comments`      |
-| `[ ]`      | `task-doc-003` | `Cargo.toml` のメタデータ整備 (ライセンス、リポジトリ、キーワード) | `feature/020-cargo-metadata`    |
+| `[x]`      | `task-doc-003` | `Cargo.toml` のメタデータ整備 (ライセンス、リポジトリ、キーワード) | `feature/020-cargo-metadata`    |
 | `[ ]`      | `task-doc-004` | 結合テスト (`tests/integration_test.rs`) の拡充                    | `feature/021-integration-tests` |
