@@ -208,6 +208,124 @@ impl DetPolygonUnclipper {
     }
 }
 
+/// Rounding strategy used when restoring polygon coordinates.
+#[derive(Debug, Clone, Copy)]
+pub enum DetScaleRounding {
+    /// Do not apply rounding.
+    None,
+    /// Round to the specified number of fractional digits.
+    FractionalDigits(u32),
+}
+
+impl Default for DetScaleRounding {
+    fn default() -> Self {
+        Self::FractionalDigits(2)
+    }
+}
+
+/// Configuration for polygon scaling back to original image coordinates.
+#[derive(Debug, Clone, Copy)]
+pub struct DetPolygonScalerConfig {
+    /// Whether to clamp coordinates to the original image bounds.
+    pub clamp_to_image: bool,
+    /// Rounding strategy applied after scaling.
+    pub rounding: DetScaleRounding,
+}
+
+impl Default for DetPolygonScalerConfig {
+    fn default() -> Self {
+        Self {
+            clamp_to_image: true,
+            rounding: DetScaleRounding::FractionalDigits(2),
+        }
+    }
+}
+
+/// Scales polygons from resized space back to the original image coordinate system.
+#[derive(Debug, Clone)]
+pub struct DetPolygonScaler {
+    config: DetPolygonScalerConfig,
+}
+
+impl DetPolygonScaler {
+    pub fn new(config: DetPolygonScalerConfig) -> Self {
+        Self { config }
+    }
+
+    /// Converts polygons generated in resized space back to the original image space.
+    ///
+    /// * `scale_ratio` - Resize ratio used during preprocessing (resized / original).
+    /// * `original_dims` - Width and height of the original image (in pixels).
+    pub fn scale_polygons(
+        &self,
+        polygons: &[Polygon<f64>],
+        scale_ratio: f64,
+        original_dims: (u32, u32),
+    ) -> Vec<Polygon<f64>> {
+        if scale_ratio <= f64::EPSILON {
+            return polygons.to_vec();
+        }
+
+        let inverse_scale = 1.0 / scale_ratio;
+
+        polygons
+            .iter()
+            .map(|polygon| self.scale_polygon(polygon, inverse_scale, original_dims))
+            .collect()
+    }
+
+    fn scale_polygon(
+        &self,
+        polygon: &Polygon<f64>,
+        inverse_scale: f64,
+        original_dims: (u32, u32),
+    ) -> Polygon<f64> {
+        let exterior = self.scale_line_string(polygon.exterior(), inverse_scale, original_dims);
+        let interiors = polygon
+            .interiors()
+            .iter()
+            .map(|line| self.scale_line_string(line, inverse_scale, original_dims))
+            .collect();
+
+        Polygon::new(exterior, interiors)
+    }
+
+    fn scale_line_string(
+        &self,
+        line: &LineString<f64>,
+        inverse_scale: f64,
+        original_dims: (u32, u32),
+    ) -> LineString<f64> {
+        let precision = match self.config.rounding {
+            DetScaleRounding::None => None,
+            DetScaleRounding::FractionalDigits(p) => Some(p),
+        };
+
+        let mut coords: Vec<Coord<f64>> = line
+            .points()
+            .map(|p| {
+                let mut x = p.x() * inverse_scale;
+                let mut y = p.y() * inverse_scale;
+
+                if self.config.clamp_to_image {
+                    x = clamp_to_bounds(x, original_dims.0);
+                    y = clamp_to_bounds(y, original_dims.1);
+                }
+
+                if let Some(precision) = precision {
+                    x = round_fractional(x, precision);
+                    y = round_fractional(y, precision);
+                }
+
+                Coord { x, y }
+            })
+            .collect();
+
+        close_if_needed(&mut coords);
+        LineString::from(coords)
+    }
+}
+
 fn contour_to_polygon(contour: &Contour<i32>) -> Option<Polygon<f64>> {
     if contour.points.len() < 3 {
         return None;
@@ -357,6 +475,16 @@ fn unclip_distance(polygon: &Polygon<f64>, ratio: f32) -> f64 {
     }
 }
 
+fn clamp_to_bounds(value: f64, bound: u32) -> f64 {
+    let upper = bound as f64;
+    value.clamp(0.0, upper)
+}
+
+fn round_fractional(value: f64, digits: u32) -> f64 {
+    let factor = 10_f64.powi(digits as i32);
+    (value * factor).round() / factor
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +575,71 @@ mod tests {
             enlarged,
             original_area
         );
+    }
+
+    #[test]
+    fn scaler_restores_original_coordinates() {
+        let polygon = Polygon::new(
+            LineString::from(vec![
+                Coord { x: 50.0, y: 20.0 },
+                Coord { x: 150.0, y: 20.0 },
+                Coord { x: 150.0, y: 120.0 },
+                Coord { x: 50.0, y: 120.0 },
+                Coord { x: 50.0, y: 20.0 },
+            ]),
+            Vec::new(),
+        );
+
+        let scaler = DetPolygonScaler::new(DetPolygonScalerConfig::default());
+        let scaled = scaler.scale_polygons(&[polygon], 0.5, (400, 400));
+
+        assert_eq!(scaled.len(), 1);
+        let exterior = scaled[0].exterior();
+        let expected = vec![
+            Coord { x: 100.0, y: 40.0 },
+            Coord { x: 300.0, y: 40.0 },
+            Coord { x: 300.0, y: 240.0 },
+            Coord { x: 100.0, y: 240.0 },
+            Coord { x: 100.0, y: 40.0 },
+        ];
+
+        for (point, expected) in exterior.points().zip(expected.iter()) {
+            assert!((point.x() - expected.x).abs() < 1e-6 && (point.y() - expected.y).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn scaler_clamps_coordinates_when_enabled() {
+        let polygon = Polygon::new(
+            LineString::from(vec![
+                Coord { x: 500.0, y: 500.0 },
+                Coord { x: 600.0, y: 500.0 },
+                Coord { x: 600.0, y: 600.0 },
+                Coord { x: 500.0, y: 600.0 },
+                Coord { x: 500.0, y: 500.0 },
+            ]),
+            Vec::new(),
+        );
+
+        let scaler = DetPolygonScaler::new(DetPolygonScalerConfig {
+            clamp_to_image: true,
+            rounding: DetScaleRounding::None,
+        });
+
+        let scaled = scaler.scale_polygons(&[polygon], 1.0, (256, 256));
+        let exterior = scaled[0].exterior();
+
+        for point in exterior.points() {
+            assert!(
+                (0.0..=256.0).contains(&point.x()),
+                "expected x within bounds, got {}",
+                point.x()
+            );
+            assert!(
+                (0.0..=256.0).contains(&point.y()),
+                "expected y within bounds, got {}",
+                point.y()
+            );
+        }
     }
 }

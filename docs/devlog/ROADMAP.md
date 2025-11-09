@@ -7,7 +7,7 @@
 ## 📊 開発進捗 (Overall Progress)
 
 *   [x] **M0: 技術検証 (Proof of Concept)**
-*   [ ] **M1: 検出パイプライン (Detection Pipeline)**
+*   [x] **M1: 検出パイプライン (Detection Pipeline)**
 *   [ ] **M2: 認識パイプライン (Recognition Pipeline)**
 *   [ ] **M3: 統合とAPI (Engine & API Layer)**
 *   [ ] **M4: ドキュメントとリリース (Docs & Release)**
@@ -35,7 +35,7 @@
 | `[x]`      | `task-det-002` | `tract` を使った検出推論の実行                                                    | `feature/004-det-infer`         |
 | `[x]`      | `task-det-003` | 検出後処理: `imageproc::find_contours` [13] による輪郭抽出                        | `feature/005-det-post-contours` |
 | `[x]`      | `task-det-004` | 検出後処理: `i_overlay::buffering` [14, 9] によるポリゴンオフセット (Unclip) [15] | `feature/006-det-post-offset`   |
-| `[ ]`      | `task-det-005` | 検出後処理: 座標のスケール復元と `Polygon` への変換                               | `feature/007-det-post-scaling`  |
+| `[x]`      | `task-det-005` | 検出後処理: 座標のスケール復元と `Polygon` への変換                               | `feature/007-det-post-scaling`  |
 
 ### M2: 認識パイプライン (Recognition Pipeline)
 
