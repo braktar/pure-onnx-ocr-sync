@@ -1,8 +1,13 @@
 use crate::detection::DetInferenceSession;
 use crate::dictionary::{DictionaryError, RecDictionary};
-use crate::postprocessing::DetPolygonUnclipperConfig;
-use crate::preprocessing::{DetPreProcessorConfig, RecPreProcessorConfig};
-use crate::recognition::{RecInferenceSession, RecPostProcessorConfig};
+use crate::postprocessing::{
+    DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
+    DetPostProcessor, DetPostProcessorConfig,
+};
+use crate::preprocessing::{
+    DetPreProcessor, DetPreProcessorConfig, RecPreProcessor, RecPreProcessorConfig,
+};
+use crate::recognition::{RecInferenceSession, RecPostProcessor, RecPostProcessorConfig};
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -68,7 +73,9 @@ impl From<DictionaryError> for OcrError {
 #[derive(Debug, Clone)]
 pub struct OcrEngineConfig {
     pub det_preprocessor: DetPreProcessorConfig,
+    pub det_postprocessor: DetPostProcessorConfig,
     pub det_unclipper: DetPolygonUnclipperConfig,
+    pub det_polygon_scaler: DetPolygonScalerConfig,
     pub rec_preprocessor: RecPreProcessorConfig,
     pub rec_postprocessor: RecPostProcessorConfig,
     pub rec_batch_size: usize,
@@ -78,7 +85,9 @@ impl Default for OcrEngineConfig {
     fn default() -> Self {
         Self {
             det_preprocessor: DetPreProcessorConfig::default(),
+            det_postprocessor: DetPostProcessorConfig::default(),
             det_unclipper: DetPolygonUnclipperConfig::default(),
+            det_polygon_scaler: DetPolygonScalerConfig::default(),
             rec_preprocessor: RecPreProcessorConfig::default(),
             rec_postprocessor: RecPostProcessorConfig::default(),
             rec_batch_size: 8,
@@ -86,16 +95,23 @@ impl Default for OcrEngineConfig {
     }
 }
 
-/// Fully prepared OCR engine with loaded models and assets.
+/// Fully prepared OCR engine orchestrating the detection and recognition pipelines.
+///
+/// The engine executes inference synchronously: upcoming methods such as
+/// [`OcrEngine::run_from_path`](#method.run_from_path) and
+/// [`OcrEngine::run_from_image`](#method.run_from_image) (implemented in later tasks)
+/// will block the caller until the complete pipeline finishes. Internally, every heavy-weight
+/// component (preprocessors, ONNX sessions, dictionary and post-processors) is wrapped in
+/// `Arc`, allowing callers to share a single engine instance across threads or to clone the
+/// engine for concurrent use when needed.
 #[derive(Debug)]
 pub struct OcrEngine {
-    pub(crate) det_model_path: PathBuf,
-    pub(crate) rec_model_path: PathBuf,
-    pub(crate) dictionary_path: PathBuf,
-    pub(crate) det_session: Arc<DetInferenceSession>,
-    pub(crate) rec_session: Arc<RecInferenceSession>,
-    pub(crate) dictionary: Arc<RecDictionary>,
-    pub(crate) config: OcrEngineConfig,
+    assets: EngineAssets,
+    #[allow(dead_code)]
+    detection: DetectionPipeline,
+    #[allow(dead_code)]
+    recognition: RecognitionPipeline,
+    config: OcrEngineConfig,
 }
 
 impl OcrEngine {
@@ -108,13 +124,31 @@ impl OcrEngine {
         dictionary: RecDictionary,
         config: OcrEngineConfig,
     ) -> Self {
+        let assets = EngineAssets::new(det_model_path, rec_model_path, dictionary_path);
+
+        let det_session = Arc::new(det_session);
+        let rec_session = Arc::new(rec_session);
+        let dictionary = Arc::new(dictionary);
+
+        let detection = DetectionPipeline::new(
+            Arc::clone(&det_session),
+            config.det_preprocessor,
+            config.det_postprocessor,
+            config.det_unclipper,
+            config.det_polygon_scaler,
+        );
+
+        let recognition = RecognitionPipeline::new(
+            Arc::clone(&rec_session),
+            Arc::clone(&dictionary),
+            config.rec_preprocessor.clone(),
+            config.rec_postprocessor.clone(),
+        );
+
         Self {
-            det_model_path,
-            rec_model_path,
-            dictionary_path,
-            det_session: Arc::new(det_session),
-            rec_session: Arc::new(rec_session),
-            dictionary: Arc::new(dictionary),
+            assets,
+            detection,
+            recognition,
             config,
         }
     }
@@ -122,6 +156,36 @@ impl OcrEngine {
     /// Returns the effective configuration for this engine.
     pub fn config(&self) -> &OcrEngineConfig {
         &self.config
+    }
+
+    /// Returns the path used for the detection model.
+    pub fn det_model_path(&self) -> &Path {
+        self.assets.det_model_path()
+    }
+
+    /// Returns the path used for the recognition model.
+    pub fn rec_model_path(&self) -> &Path {
+        self.assets.rec_model_path()
+    }
+
+    /// Returns the path used for the recognition dictionary.
+    pub fn dictionary_path(&self) -> &Path {
+        self.assets.dictionary_path()
+    }
+
+    /// Returns the configured recognition batch size.
+    pub fn rec_batch_size(&self) -> usize {
+        self.config.rec_batch_size
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn detection(&self) -> &DetectionPipeline {
+        &self.detection
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn recognition(&self) -> &RecognitionPipeline {
+        &self.recognition
     }
 }
 
@@ -231,13 +295,10 @@ impl OcrEngineBuilder {
         let mut det_preprocessor_config = DetPreProcessorConfig::default();
         det_preprocessor_config.limit_side_len = self.det_limit_side_len;
 
-        let config = OcrEngineConfig {
-            det_preprocessor: det_preprocessor_config,
-            det_unclipper: det_unclipper_config,
-            rec_preprocessor: RecPreProcessorConfig::default(),
-            rec_postprocessor: RecPostProcessorConfig::default(),
-            rec_batch_size: self.rec_batch_size,
-        };
+        let mut config = OcrEngineConfig::default();
+        config.det_preprocessor = det_preprocessor_config;
+        config.det_unclipper = det_unclipper_config;
+        config.rec_batch_size = self.rec_batch_size;
 
         Ok(OcrEngine::new(
             det_model_path,
@@ -259,6 +320,135 @@ fn verify_file_exists(path: &Path) -> Result<(), OcrError> {
         });
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct EngineAssets {
+    det_model_path: PathBuf,
+    rec_model_path: PathBuf,
+    dictionary_path: PathBuf,
+}
+
+impl EngineAssets {
+    fn new(det_model_path: PathBuf, rec_model_path: PathBuf, dictionary_path: PathBuf) -> Self {
+        Self {
+            det_model_path,
+            rec_model_path,
+            dictionary_path,
+        }
+    }
+
+    fn det_model_path(&self) -> &Path {
+        self.det_model_path.as_path()
+    }
+
+    fn rec_model_path(&self) -> &Path {
+        self.rec_model_path.as_path()
+    }
+
+    fn dictionary_path(&self) -> &Path {
+        self.dictionary_path.as_path()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct DetectionPipeline {
+    #[allow(dead_code)]
+    preprocessor: DetPreProcessor,
+    #[allow(dead_code)]
+    session: Arc<DetInferenceSession>,
+    #[allow(dead_code)]
+    postprocessor: DetPostProcessor,
+    #[allow(dead_code)]
+    unclipper: DetPolygonUnclipper,
+    #[allow(dead_code)]
+    scaler: DetPolygonScaler,
+}
+
+#[allow(dead_code)]
+impl DetectionPipeline {
+    fn new(
+        session: Arc<DetInferenceSession>,
+        preprocessor: DetPreProcessorConfig,
+        postprocessor: DetPostProcessorConfig,
+        unclipper: DetPolygonUnclipperConfig,
+        scaler: DetPolygonScalerConfig,
+    ) -> Self {
+        Self {
+            preprocessor: DetPreProcessor::new(preprocessor),
+            session,
+            postprocessor: DetPostProcessor::new(postprocessor),
+            unclipper: DetPolygonUnclipper::new(unclipper),
+            scaler: DetPolygonScaler::new(scaler),
+        }
+    }
+
+    pub(crate) fn preprocessor(&self) -> &DetPreProcessor {
+        &self.preprocessor
+    }
+
+    pub(crate) fn session(&self) -> &Arc<DetInferenceSession> {
+        &self.session
+    }
+
+    pub(crate) fn postprocessor(&self) -> &DetPostProcessor {
+        &self.postprocessor
+    }
+
+    pub(crate) fn unclipper(&self) -> &DetPolygonUnclipper {
+        &self.unclipper
+    }
+
+    pub(crate) fn scaler(&self) -> &DetPolygonScaler {
+        &self.scaler
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct RecognitionPipeline {
+    #[allow(dead_code)]
+    preprocessor: RecPreProcessor,
+    #[allow(dead_code)]
+    session: Arc<RecInferenceSession>,
+    #[allow(dead_code)]
+    postprocessor: RecPostProcessor,
+    #[allow(dead_code)]
+    dictionary: Arc<RecDictionary>,
+}
+
+#[allow(dead_code)]
+impl RecognitionPipeline {
+    fn new(
+        session: Arc<RecInferenceSession>,
+        dictionary: Arc<RecDictionary>,
+        preprocessor: RecPreProcessorConfig,
+        postprocessor: RecPostProcessorConfig,
+    ) -> Self {
+        let postprocessor = RecPostProcessor::new(Arc::clone(&dictionary), postprocessor);
+
+        Self {
+            preprocessor: RecPreProcessor::new(preprocessor),
+            session,
+            postprocessor,
+            dictionary,
+        }
+    }
+
+    pub(crate) fn preprocessor(&self) -> &RecPreProcessor {
+        &self.preprocessor
+    }
+
+    pub(crate) fn session(&self) -> &Arc<RecInferenceSession> {
+        &self.session
+    }
+
+    pub(crate) fn postprocessor(&self) -> &RecPostProcessor {
+        &self.postprocessor
+    }
+
+    pub(crate) fn dictionary(&self) -> &Arc<RecDictionary> {
+        &self.dictionary
+    }
 }
 
 #[cfg(test)]
@@ -341,5 +531,53 @@ mod tests {
         assert_eq!(engine.config().det_preprocessor.limit_side_len, 1024);
         assert!((engine.config().det_unclipper.unclip_ratio - 2.0).abs() < f32::EPSILON);
         assert_eq!(engine.config().rec_batch_size, 4);
+    }
+
+    #[test]
+    fn engine_reports_asset_paths_and_batch_size() {
+        let (det, rec, dict) = existing_model_paths()
+            .expect("expected PP-OCRv5 assets to be present under models/ppocrv5/");
+
+        let engine = OcrEngineBuilder::new()
+            .det_model_path(&det)
+            .rec_model_path(&rec)
+            .dictionary_path(&dict)
+            .rec_batch_size(6)
+            .build()
+            .expect("engine should build successfully");
+
+        assert_eq!(engine.det_model_path(), det.as_path());
+        assert_eq!(engine.rec_model_path(), rec.as_path());
+        assert_eq!(engine.dictionary_path(), dict.as_path());
+        assert_eq!(engine.rec_batch_size(), 6);
+    }
+
+    #[test]
+    fn detection_and_recognition_pipelines_are_initialized() {
+        let (det, rec, dict) = existing_model_paths()
+            .expect("expected PP-OCRv5 assets to be present under models/ppocrv5/");
+
+        let engine = OcrEngineBuilder::new()
+            .det_model_path(&det)
+            .rec_model_path(&rec)
+            .dictionary_path(&dict)
+            .build()
+            .expect("engine should build successfully");
+
+        let detection = engine.detection();
+        assert!(Arc::strong_count(detection.session()) >= 1);
+        assert!(Arc::strong_count(engine.recognition().session()) >= 1);
+
+        // The detection pipeline exposes all required stages.
+        detection.preprocessor();
+        detection.postprocessor();
+        detection.unclipper();
+        detection.scaler();
+
+        // Recognition pipeline provides access to pre/post processing and dictionary.
+        let recognition = engine.recognition();
+        recognition.preprocessor();
+        recognition.postprocessor();
+        assert!(Arc::strong_count(recognition.dictionary()) >= 1);
     }
 }
