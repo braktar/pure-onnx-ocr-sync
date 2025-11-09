@@ -43,7 +43,7 @@
 
 | ステータス | タスクID       | タスク概要                                                                         | 関連ブランチ / イシュー       |
 | :--------- | :------------- | :--------------------------------------------------------------------------------- | :---------------------------- |
-| `[ ]`      | `task-rec-001` | 認識前処理 (`RecPreProcessor`) の実装 (Crop, Force Resize [3], NCHW変換, Batching) | `feature/008-rec-preproc`     |
+| `[x]`      | `task-rec-001` | 認識前処理 (`RecPreProcessor`) の実装 (Crop, Force Resize [3], NCHW変換, Batching) | `feature/008-rec-preproc`     |
 | `[ ]`      | `task-rec-002` | `tract` を使った認識推論の実行 (バッチ対応)                                        | `feature/009-rec-infer`       |
 | `[ ]`      | `task-rec-003` | 辞書ファイル (`ppocrv5_dict.txt` [3, 16]) のロード機能実装                         | `feature/010-rec-dict`        |
 | `[ ]`      | `task-rec-004` | 認識後処理: Pure Rust CTC Greedyデコード [17, 18] のアルゴリズム実装               | `feature/011-rec-post-ctc`    |

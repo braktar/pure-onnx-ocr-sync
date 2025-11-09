@@ -1,5 +1,5 @@
 use image::{imageops::FilterType, DynamicImage, GenericImageView};
-use ndarray::{Array3, Axis};
+use ndarray::{s, Array3, Array4, Axis};
 use tract_onnx::prelude::Tensor;
 
 /// Configuration parameters for `DetPreProcessor`.
@@ -108,6 +108,219 @@ fn compute_resized_dims(orig_w: u32, orig_h: u32, limit_side_len: u32) -> (u32, 
     (resized_w, resized_h, scale_ratio)
 }
 
+/// Rectangle specifying the area to crop for recognition preprocessing.
+#[derive(Debug, Clone, Copy)]
+pub struct RecTextRegion {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Configuration parameters for recognition preprocessing.
+#[derive(Debug, Clone)]
+pub struct RecPreProcessorConfig {
+    pub target_height: u32,
+    pub max_width: u32,
+    pub mean: [f32; 3],
+    pub std: [f32; 3],
+    pub pad_value: [f32; 3],
+}
+
+impl Default for RecPreProcessorConfig {
+    fn default() -> Self {
+        Self {
+            target_height: 48,
+            max_width: 320,
+            mean: [0.5, 0.5, 0.5],
+            std: [0.5, 0.5, 0.5],
+            pad_value: [0.0, 0.0, 0.0],
+        }
+    }
+}
+
+/// Errors that can be produced by recognition preprocessing.
+#[derive(Debug)]
+pub enum RecPreProcessorError {
+    /// The provided batch of regions is empty.
+    EmptyRegions,
+    /// The input image has zero width or height.
+    EmptyImage,
+    /// The configuration contains an invalid parameter (e.g. zero height/width).
+    InvalidConfiguration,
+    /// A region had zero width or height.
+    ZeroArea { index: usize },
+    /// A region extended beyond the bounds of the image.
+    RegionOutOfBounds {
+        index: usize,
+        image_dims: (u32, u32),
+        region: RecTextRegion,
+    },
+}
+
+impl std::fmt::Display for RecPreProcessorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecPreProcessorError::EmptyRegions => {
+                write!(f, "at least one text region is required for recognition")
+            }
+            RecPreProcessorError::EmptyImage => {
+                write!(f, "input image dimensions must be positive")
+            }
+            RecPreProcessorError::InvalidConfiguration => {
+                write!(f, "recognition preprocessor configuration is invalid")
+            }
+            RecPreProcessorError::ZeroArea { index } => {
+                write!(f, "text region at index {} has zero area", index)
+            }
+            RecPreProcessorError::RegionOutOfBounds {
+                index,
+                image_dims,
+                region,
+            } => write!(
+                f,
+                "text region at index {} (x={}, y={}, w={}, h={}) exceeds image bounds {:?}",
+                index, region.x, region.y, region.width, region.height, image_dims
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RecPreProcessorError {}
+
+/// Result of recognition preprocessing.
+#[derive(Debug, Clone)]
+pub struct PreprocessedRecBatch {
+    pub tensor: Tensor,
+    pub valid_widths: Vec<u32>,
+    pub max_width: u32,
+}
+
+impl PreprocessedRecBatch {
+    pub fn valid_width_ratios(&self) -> Vec<f32> {
+        if self.max_width == 0 {
+            return vec![0.0; self.valid_widths.len()];
+        }
+        self.valid_widths
+            .iter()
+            .map(|width| *width as f32 / self.max_width as f32)
+            .collect()
+    }
+}
+
+/// SVTR recognition preprocessor.
+#[derive(Debug, Clone)]
+pub struct RecPreProcessor {
+    config: RecPreProcessorConfig,
+}
+
+impl RecPreProcessor {
+    pub fn new(config: RecPreProcessorConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn process(
+        &self,
+        image: &DynamicImage,
+        regions: &[RecTextRegion],
+    ) -> Result<PreprocessedRecBatch, RecPreProcessorError> {
+        if regions.is_empty() {
+            return Err(RecPreProcessorError::EmptyRegions);
+        }
+
+        if self.config.target_height == 0 || self.config.max_width == 0 {
+            return Err(RecPreProcessorError::InvalidConfiguration);
+        }
+
+        let (img_w, img_h) = image.dimensions();
+        if img_w == 0 || img_h == 0 {
+            return Err(RecPreProcessorError::EmptyImage);
+        }
+
+        let target_height = self.config.target_height;
+        let max_width = self.config.max_width;
+        let batch_size = regions.len();
+
+        let mut batch =
+            Array4::<f32>::zeros((batch_size, 3, target_height as usize, max_width as usize));
+
+        for sample in 0..batch_size {
+            for channel in 0..3 {
+                let pad = normalize_value(
+                    self.config.pad_value[channel],
+                    self.config.mean[channel],
+                    self.config.std[channel],
+                );
+                batch.slice_mut(s![sample, channel, .., ..]).fill(pad);
+            }
+        }
+
+        let mut valid_widths = Vec::with_capacity(batch_size);
+
+        for (index, region) in regions.iter().copied().enumerate() {
+            if region.width == 0 || region.height == 0 {
+                return Err(RecPreProcessorError::ZeroArea { index });
+            }
+
+            if region.x >= img_w
+                || region.y >= img_h
+                || region.x + region.width > img_w
+                || region.y + region.height > img_h
+            {
+                return Err(RecPreProcessorError::RegionOutOfBounds {
+                    index,
+                    image_dims: (img_w, img_h),
+                    region,
+                });
+            }
+
+            let cropped = image.crop_imm(region.x, region.y, region.width, region.height);
+            let aspect_ratio = region.width as f32 / region.height as f32;
+            let mut target_width = (aspect_ratio * target_height as f32)
+                .round()
+                .clamp(1.0, max_width as f32) as u32;
+            if target_width == 0 {
+                target_width = 1;
+            }
+
+            let resized = cropped.resize_exact(target_width, target_height, FilterType::Lanczos3);
+            let rgb_image = resized.to_rgb8();
+
+            for y in 0..target_height as usize {
+                for x in 0..target_width as usize {
+                    let pixel = rgb_image.get_pixel(x as u32, y as u32);
+                    for channel in 0..3 {
+                        let value = pixel[channel] as f32 / 255.0;
+                        let normalized = normalize_value(
+                            value,
+                            self.config.mean[channel],
+                            self.config.std[channel],
+                        );
+                        batch[[index, channel, y, x]] = normalized;
+                    }
+                }
+            }
+
+            valid_widths.push(target_width);
+        }
+
+        let tensor: Tensor = batch.into_dyn().into();
+        Ok(PreprocessedRecBatch {
+            tensor,
+            valid_widths,
+            max_width,
+        })
+    }
+}
+
+fn normalize_value(value: f32, mean: f32, std: f32) -> f32 {
+    if std == 0.0 {
+        0.0
+    } else {
+        (value - mean) / std
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +329,17 @@ mod tests {
     fn solid_image(width: u32, height: u32, value: u8) -> DynamicImage {
         let pixel = Rgb([value, value.saturating_sub(1), value.saturating_add(1)]);
         let buffer = ImageBuffer::from_pixel(width, height, pixel);
+        DynamicImage::ImageRgb8(buffer)
+    }
+
+    fn gradient_image(width: u32, height: u32) -> DynamicImage {
+        let mut buffer = ImageBuffer::new(width, height);
+        for (x, y, pixel) in buffer.enumerate_pixels_mut() {
+            let base = ((x + y) % 256) as u8;
+            let green = base.saturating_add(32);
+            let blue = base.saturating_add(64);
+            *pixel = Rgb([base, green, blue]);
+        }
         DynamicImage::ImageRgb8(buffer)
     }
 
@@ -157,5 +381,112 @@ mod tests {
         assert!(min >= 0.0);
         assert!(max <= 1.0);
         assert!((max - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn recognition_single_region_preprocessing() {
+        let image = gradient_image(200, 100);
+        let config = RecPreProcessorConfig::default();
+        let regions = vec![RecTextRegion {
+            x: 20,
+            y: 10,
+            width: 80,
+            height: 40,
+        }];
+
+        let preprocessor = RecPreProcessor::new(config.clone());
+        let batch = preprocessor.process(&image, &regions).unwrap();
+
+        let expected_shape = [
+            1,
+            3,
+            config.target_height as usize,
+            config.max_width as usize,
+        ];
+        assert_eq!(batch.tensor.shape(), &expected_shape);
+        assert_eq!(batch.valid_widths, vec![96]);
+
+        let tensor = batch.tensor.to_array_view::<f32>().unwrap();
+        let pad = normalize_value(config.pad_value[0], config.mean[0], config.std[0]);
+        assert!(
+            (tensor[[0, 0, 0, (config.max_width - 1) as usize]] - pad).abs() < 1e-6,
+            "padded area should remain at pad value"
+        );
+        assert!(
+            (tensor[[0, 0, 0, 0]] - pad).abs() > 1e-3,
+            "cropped content should differ from pad value"
+        );
+
+        let ratios = batch.valid_width_ratios();
+        assert_eq!(ratios.len(), 1);
+        assert!((ratios[0] - 96.0 / config.max_width as f32).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn recognition_multiple_regions_padding() {
+        let image = gradient_image(320, 160);
+        let config = RecPreProcessorConfig::default();
+        let regions = vec![
+            RecTextRegion {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 60,
+            },
+            RecTextRegion {
+                x: 150,
+                y: 40,
+                width: 40,
+                height: 80,
+            },
+        ];
+
+        let preprocessor = RecPreProcessor::new(config.clone());
+        let batch = preprocessor.process(&image, &regions).unwrap();
+
+        assert_eq!(batch.valid_widths, vec![96, 24]);
+
+        let tensor = batch.tensor.to_array_view::<f32>().unwrap();
+        let pad = normalize_value(config.pad_value[0], config.mean[0], config.std[0]);
+
+        // Ensure padding column for first sample is untouched.
+        assert!((tensor[[0, 0, 10, (config.max_width - 1) as usize]] - pad).abs() < 1e-6);
+        // Ensure padding column for second sample is untouched.
+        assert!((tensor[[1, 1, 20, (config.max_width - 1) as usize]] - pad).abs() < 1e-6);
+    }
+
+    #[test]
+    fn recognition_region_out_of_bounds_is_error() {
+        let image = gradient_image(100, 50);
+        let config = RecPreProcessorConfig::default();
+        let regions = vec![RecTextRegion {
+            x: 80,
+            y: 10,
+            width: 30,
+            height: 20,
+        }];
+
+        let preprocessor = RecPreProcessor::new(config);
+        let error = preprocessor.process(&image, &regions).unwrap_err();
+        assert!(matches!(
+            error,
+            RecPreProcessorError::RegionOutOfBounds { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn recognition_zero_area_region_is_error() {
+        let image = gradient_image(100, 50);
+        let config = RecPreProcessorConfig::default();
+        let regions = vec![RecTextRegion {
+            x: 10,
+            y: 10,
+            width: 0,
+            height: 20,
+        }];
+
+        let preprocessor = RecPreProcessor::new(config);
+        let error = preprocessor.process(&image, &regions).unwrap_err();
+        assert!(matches!(error, RecPreProcessorError::ZeroArea { index: 0 }));
     }
 }

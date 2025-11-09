@@ -10,6 +10,8 @@ pub use postprocessing::{
 };
 pub use preprocessing::{
     DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, PreprocessedDetInput,
+    PreprocessedRecBatch, RecPreProcessor, RecPreProcessorConfig, RecPreProcessorError,
+    RecTextRegion,
 };
 
 use std::path::Path;
