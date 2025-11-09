@@ -1236,6 +1236,7 @@ dependencies = [
  "image",
  "imageproc",
  "ndarray",
+ "once_cell",
  "time",
  "tract-onnx",
 ]

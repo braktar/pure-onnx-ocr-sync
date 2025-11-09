@@ -104,6 +104,9 @@ Each English document mirrors the Japanese source to help international contribu
 - 2025-11-09: Implemented recognition post-processor that combines logits, CTC decoding, and dictionary lookup.
 - 2025-11-09: Implemented `OcrEngineBuilder`, `OcrEngine`, and public error surface.
 - 2025-11-09: Refreshed README and added bilingual documentation set (`task-doc-001`).
+- 2025-11-09: Enhanced public Rustdoc coverage (`task-doc-002`) and validated `cargo doc` output.
+- 2025-11-09: Completed Cargo metadata (`task-doc-003`) and `cargo package --no-verify` validation.
+- 2025-11-09: Added integration tests (`task-doc-004`) with fixture strategy and CI guidance.
 
 ## Contributing
 
@@ -116,4 +119,9 @@ Issues and pull requests are welcome. Please:
 ## License
 
 Licensed under `Apache-2.0`, aligning with PaddleOCR, OnnxOCR, and tract licensing.
+
+## Testing
+
+- Unit tests: `cargo test`
+- Integration tests: provide PP-OCRv5 models and a demo image via the `PURE_ONNX_OCR_FIXTURE_DIR` environment variable or `tests/fixtures/`. See `tests/fixtures/README.md` for the expected directory structure. Tests skip automatically when fixtures are missing.
 

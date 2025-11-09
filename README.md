@@ -125,6 +125,7 @@ fn main() -> Result<(), OcrError> {
 - 2025-11-09: ドキュメント整備タスク `task-doc-001` を完了。READMEの再構成と英語版ドキュメントを追加。
 - 2025-11-09: 公開APIの Rustdoc コメント (`task-doc-002`) を整備し、`cargo doc` で生成物を確認。
 - 2025-11-09: Cargo メタデータ (`task-doc-003`) を整備し、`cargo package --no-verify` で公開準備を確認。
+- 2025-11-09: 結合テスト (`task-doc-004`) を追加し、フィクスチャ設計と CI 実行手順を文書化。
 
 ## コントリビューション
 
@@ -139,3 +140,8 @@ Pull Request や Issue を歓迎します。大規模な変更を提案する場
 ## ライセンス
 
 本プロジェクトは `Apache-2.0` ライセンスで提供します。リファレンス実装である `PaddleOCR`, `OnnxOCR`, `tract` と同一ファミリーのライセンス体系に準拠します。
+
+## テスト
+
+- ユニットテスト: `cargo test`
+- 結合テスト: PP-OCRv5 モデルとテスト画像を `PURE_ONNX_OCR_FIXTURE_DIR` または `tests/fixtures/` に配置してください。フィクスチャが見つからない場合、テストは自動的にスキップされます。必要なパス構成は `tests/fixtures/README.md` を参照してください。
