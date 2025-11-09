@@ -1,0 +1,10 @@
+[package]
+name = "pure-onnx-ocr"
+version = "0.1.0"
+rust-version = "1.70"
+edition = "2021"
+
+[dependencies]
+tract-onnx = "0.20"
+ndarray = "0.15"
+time = "0.3.44"
