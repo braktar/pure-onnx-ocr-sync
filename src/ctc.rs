@@ -2,14 +2,18 @@ use crate::dictionary::RecDictionary;
 use ndarray::{s, Array3, Axis};
 
 /// Configuration options for greedy CTC decoding.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct CtcGreedyDecoderConfig {
     pub blank_id: usize,
+    pub fallback_token: Option<String>,
 }
 
 impl Default for CtcGreedyDecoderConfig {
     fn default() -> Self {
-        Self { blank_id: 0 }
+        Self {
+            blank_id: 0,
+            fallback_token: None,
+        }
     }
 }
 
@@ -68,6 +72,7 @@ pub struct DecodedSequence {
     pub text: String,
     pub token_indices: Vec<usize>,
     pub confidence: f32,
+    pub fallback_count: usize,
 }
 
 /// Greedy CTC decoder producing text using the recognition dictionary.
@@ -117,6 +122,7 @@ impl CtcGreedyDecoder {
             let mut token_indices = Vec::new();
             let mut confidence_sum = 0.0f32;
             let mut confidence_count = 0usize;
+            let mut fallback_count = 0usize;
 
             for t in 0..max_steps {
                 let step = logits.slice(s![batch_index, t, ..]);
@@ -138,11 +144,27 @@ impl CtcGreedyDecoder {
                     continue;
                 }
 
+                let mut sum = 0.0f32;
+                for value in step.iter() {
+                    sum += (value - best_value).exp();
+                }
+                let probability = if sum > 0.0 { 1.0 / sum } else { 0.0 };
+
                 if best_index >= dictionary.len() {
-                    return Err(CtcGreedyDecoderError::DictionaryIndexMissing {
-                        index: best_index,
-                        dictionary_size: dictionary.len(),
-                    });
+                    if let Some(fallback) = &self.config.fallback_token {
+                        text.push_str(fallback);
+                        token_indices.push(best_index);
+                        fallback_count += 1;
+                        confidence_sum += probability;
+                        confidence_count += 1;
+                        previous_symbol = Some(best_index);
+                        continue;
+                    } else {
+                        return Err(CtcGreedyDecoderError::DictionaryIndexMissing {
+                            index: best_index,
+                            dictionary_size: dictionary.len(),
+                        });
+                    }
                 }
 
                 let token = dictionary
@@ -151,11 +173,6 @@ impl CtcGreedyDecoder {
                 text.push_str(token);
                 token_indices.push(best_index);
 
-                let mut sum = 0.0f32;
-                for value in step.iter() {
-                    sum += (value - best_value).exp();
-                }
-                let probability = if sum > 0.0 { 1.0 / sum } else { 0.0 };
                 confidence_sum += probability;
                 confidence_count += 1;
 
@@ -172,6 +189,7 @@ impl CtcGreedyDecoder {
                 text,
                 token_indices,
                 confidence,
+                fallback_count,
             });
         }
 
@@ -211,7 +229,10 @@ mod tests {
         )
         .unwrap();
 
-        let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig { blank_id: 2 });
+        let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig {
+            blank_id: 2,
+            fallback_token: None,
+        });
         let dictionary = dictionary_from_tokens(&["a", "b"]);
         let sequences = decoder
             .decode(&logits, &[4], &dictionary)
@@ -223,6 +244,7 @@ mod tests {
         assert_eq!(first.token_indices, vec![0, 1]);
         assert!(first.confidence > 0.0);
         assert!(first.confidence <= 1.0);
+        assert_eq!(first.fallback_count, 0);
     }
 
     #[test]
@@ -237,7 +259,10 @@ mod tests {
         )
         .unwrap();
 
-        let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig { blank_id: 1 });
+        let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig {
+            blank_id: 1,
+            fallback_token: None,
+        });
         let dictionary = dictionary_from_tokens(&["a"]);
         let sequences = decoder
             .decode(&logits, &[3], &dictionary)
@@ -246,12 +271,16 @@ mod tests {
         assert_eq!(sequences[0].text, "");
         assert!(sequences[0].token_indices.is_empty());
         assert_eq!(sequences[0].confidence, 0.0);
+        assert_eq!(sequences[0].fallback_count, 0);
     }
 
     #[test]
     fn error_when_blank_id_out_of_range() {
         let logits = Array3::<f32>::zeros((1, 1, 2));
-        let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig { blank_id: 3 });
+        let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig {
+            blank_id: 3,
+            fallback_token: None,
+        });
         let dictionary = dictionary_from_tokens(&["a"]);
         let error = decoder
             .decode(&logits, &[1], &dictionary)
@@ -264,5 +293,32 @@ mod tests {
                 class_count: 2
             }
         );
+    }
+
+    #[test]
+    fn applies_fallback_when_dictionary_missing() {
+        let logits = Array3::from_shape_vec(
+            (1, 2, 3),
+            vec![
+                -0.5, 0.1, 1.0, //
+                -0.2, 0.0, 1.2, //
+            ],
+        )
+        .unwrap();
+
+        let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig {
+            blank_id: 0,
+            fallback_token: Some("[UNK]".to_string()),
+        });
+        let dictionary = dictionary_from_tokens(&["<blank>", "a"]);
+        let sequences = decoder
+            .decode(&logits, &[2], &dictionary)
+            .expect("decoder should fallback instead of error");
+
+        assert_eq!(sequences.len(), 1);
+        let first = &sequences[0];
+        assert_eq!(first.text, "[UNK]");
+        assert_eq!(first.fallback_count, 1);
+        assert_eq!(first.token_indices, vec![2]);
     }
 }

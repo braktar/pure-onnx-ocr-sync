@@ -8,7 +8,7 @@
 
 *   [x] **M0: 技術検証 (Proof of Concept)**
 *   [x] **M1: 検出パイプライン (Detection Pipeline)**
-*   [ ] **M2: 認識パイプライン (Recognition Pipeline)**
+*   [x] **M2: 認識パイプライン (Recognition Pipeline)**
 *   [ ] **M3: 統合とAPI (Engine & API Layer)**
 *   [ ] **M4: ドキュメントとリリース (Docs & Release)**
 
@@ -47,7 +47,7 @@
 | `[x]`      | `task-rec-002` | `tract` を使った認識推論の実行 (バッチ対応)                                        | `feature/009-rec-infer`       |
 | `[x]`      | `task-rec-003` | 辞書ファイル (`ppocrv5_dict.txt` [3, 16]) のロード機能実装                         | `feature/010-rec-dict`        |
 | `[x]`      | `task-rec-004` | 認識後処理: Pure Rust CTC Greedyデコード [17, 18] のアルゴリズム実装               | `feature/011-rec-post-ctc`    |
-| `[ ]`      | `task-rec-005` | 認識後処理: `ndarray::argmax` [19] とCTCデコードの結合                             | `feature/012-rec-post-decode` |
+| `[x]`      | `task-rec-005` | 認識後処理: `ndarray::argmax` [19] とCTCデコードの結合                             | `feature/012-rec-post-decode` |
 
 ### M3: 統合とAPI (Engine & API Layer)
 

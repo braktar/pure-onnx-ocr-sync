@@ -1,3 +1,7 @@
+use crate::ctc::{
+    CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence,
+};
+use crate::dictionary::RecDictionary;
 use crate::preprocessing::PreprocessedRecBatch;
 use ndarray::Array3;
 use std::cell::RefCell;
@@ -176,12 +180,89 @@ impl RecInferenceSession {
     }
 }
 
+/// Configuration for recognition post processing (CTC decoding stage).
+#[derive(Debug, Clone)]
+pub struct RecPostProcessorConfig {
+    pub blank_id: usize,
+    pub fallback_token: String,
+}
+
+impl Default for RecPostProcessorConfig {
+    fn default() -> Self {
+        Self {
+            blank_id: 0,
+            fallback_token: "[UNK]".to_string(),
+        }
+    }
+}
+
+/// Errors that can occur while decoding recognition logits into text.
+#[derive(Debug)]
+pub enum RecPostProcessorError {
+    Decoder(CtcGreedyDecoderError),
+}
+
+impl std::fmt::Display for RecPostProcessorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecPostProcessorError::Decoder(err) => write!(f, "ctc decoder failed: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for RecPostProcessorError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RecPostProcessorError::Decoder(err) => Some(err),
+        }
+    }
+}
+
+impl From<CtcGreedyDecoderError> for RecPostProcessorError {
+    fn from(value: CtcGreedyDecoderError) -> Self {
+        RecPostProcessorError::Decoder(value)
+    }
+}
+
+/// Recognition post processor that converts logits into decoded text.
+#[derive(Debug, Clone)]
+pub struct RecPostProcessor {
+    decoder: CtcGreedyDecoder,
+    dictionary: Arc<RecDictionary>,
+}
+
+impl RecPostProcessor {
+    pub fn new(dictionary: Arc<RecDictionary>, config: RecPostProcessorConfig) -> Self {
+        let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig {
+            blank_id: config.blank_id,
+            fallback_token: Some(config.fallback_token),
+        });
+        Self {
+            decoder,
+            dictionary,
+        }
+    }
+
+    pub fn process(
+        &self,
+        output: &RecInferenceOutput,
+    ) -> Result<Vec<DecodedSequence>, RecPostProcessorError> {
+        self.decoder
+            .decode(&output.logits, &output.valid_timesteps, &self.dictionary)
+            .map_err(RecPostProcessorError::from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dictionary::RecDictionary;
     use crate::preprocessing::{RecPreProcessor, RecPreProcessorConfig, RecTextRegion};
     use image::{DynamicImage, ImageBuffer, Rgb};
+    use ndarray::Array3;
+    use std::fs;
     use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn gradient_image(width: u32, height: u32) -> DynamicImage {
         let mut buffer = ImageBuffer::new(width, height);
@@ -192,6 +273,18 @@ mod tests {
             *pixel = Rgb([base, green, blue]);
         }
         DynamicImage::ImageRgb8(buffer)
+    }
+
+    fn dictionary_from_tokens(tokens: &[&str]) -> RecDictionary {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rec_post_dict_{}.txt", timestamp));
+        fs::write(&path, tokens.join("\n")).unwrap();
+        let dict = RecDictionary::from_path(&path).unwrap();
+        fs::remove_file(path).ok();
+        dict
     }
 
     #[test]
@@ -227,5 +320,44 @@ mod tests {
         assert!(output.valid_timesteps[0] <= shape.1);
 
         Ok(())
+    }
+
+    #[test]
+    fn post_processor_decodes_with_fallback() {
+        let logits = Array3::from_shape_vec(
+            (2, 3, 4),
+            vec![
+                3.0, 1.0, -5.0, -6.0, //
+                -6.0, 4.0, -4.0, -7.0, //
+                -7.0, -6.0, -5.0, 3.0, //
+                // second sequence with unknown indices
+                -6.0, -5.0, 4.5, -7.0, //
+                -5.0, -4.0, 4.3, -7.0, //
+                -8.0, -7.0, -6.0, 5.0, //
+            ],
+        )
+        .unwrap();
+        let output = RecInferenceOutput {
+            logits,
+            valid_timesteps: vec![2, 3],
+        };
+
+        let dictionary = Arc::new(dictionary_from_tokens(&["a", "b"]));
+        let processor = RecPostProcessor::new(
+            Arc::clone(&dictionary),
+            RecPostProcessorConfig {
+                blank_id: 3,
+                fallback_token: "[UNK]".to_string(),
+            },
+        );
+
+        let sequences = processor.process(&output).expect("decoding succeeds");
+        assert_eq!(sequences.len(), 2);
+
+        assert_eq!(sequences[0].text, "ab");
+        assert_eq!(sequences[0].fallback_count, 0);
+
+        assert_eq!(sequences[1].text, "[UNK]");
+        assert_eq!(sequences[1].fallback_count, 1);
     }
 }

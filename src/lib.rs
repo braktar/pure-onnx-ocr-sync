@@ -18,7 +18,10 @@ pub use preprocessing::{
     PreprocessedRecBatch, RecPreProcessor, RecPreProcessorConfig, RecPreProcessorError,
     RecTextRegion,
 };
-pub use recognition::{RecInferenceOutput, RecInferenceSession};
+pub use recognition::{
+    RecInferenceOutput, RecInferenceSession, RecPostProcessor, RecPostProcessorConfig,
+    RecPostProcessorError,
+};
 
 use std::path::Path;
 use tract_onnx::prelude::*;
