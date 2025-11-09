@@ -60,6 +60,32 @@ fn main() -> Result<(), pure_onnx_ocr::OcrError> {
 }
 ```
 
+## Smoke Testing with `ocr_smoke`
+
+If you want to replicate the behaviour of the original `test_ocr.py` without leaving the Rust ecosystem, you can use the bundled `ocr_smoke` binary.
+
+- By default it points to `models/ppocrv5/det.onnx`, `models/ppocrv5/rec.onnx`, and `models/ppocrv5/ppocrv5_dict.txt`.
+- Example usage:
+
+```bash
+cargo run --bin ocr_smoke -- path/to/image.jpg
+
+# Override model paths and runtime options
+cargo run --bin ocr_smoke -- path/to/image.jpg \
+  --det-model models/ppocrv5/det.onnx \
+  --rec-model models/ppocrv5/rec.onnx \
+  --dictionary models/ppocrv5/ppocrv5_dict.txt \
+  --det-limit-side-len 960 \
+  --det-unclip-ratio 1.5 \
+  --rec-batch-size 8
+```
+
+The CLI prints inference timing, recognised texts with confidences, and polygon coordinates. It exits with a descriptive error when the image or models are missing.
+
+Internally, the detection pre-processing stage now zero-pads resized tensors so their height/width are multiples of 32, matching DBNet’s input requirements.
+
+> **Current limitation:** Although the pipeline loads and runs, the OCR results are still noisy and often incorrect. Root-cause analysis and debugging remain open tasks.
+
 ### Troubleshooting
 
 - `ModelLoad`: `tract` rejected an operator that the ONNX graph requires (e.g., `LayerNormalization`, `Scan`). Try a simplified model or file an issue with model details.

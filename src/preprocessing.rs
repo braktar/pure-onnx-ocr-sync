@@ -69,14 +69,23 @@ impl DetPreProcessor {
         let resized = if resized_w == orig_w && resized_h == orig_h {
             image.clone()
         } else {
-            image.resize(resized_w, resized_h, FilterType::Lanczos3)
+            image.resize_exact(resized_w, resized_h, FilterType::Lanczos3)
         };
 
         let rgb_image = resized.to_rgb8();
-        let array_hwc = Array3::<f32>::from_shape_fn(
-            (resized_h as usize, resized_w as usize, 3),
-            |(y, x, c)| rgb_image.get_pixel(x as u32, y as u32)[c] as f32 / 255.0,
-        );
+        let padded_w = round_up_to_multiple(resized_w, 32);
+        let padded_h = round_up_to_multiple(resized_h, 32);
+
+        let mut array_hwc = Array3::<f32>::zeros((padded_h as usize, padded_w as usize, 3));
+
+        for y in 0..resized_h as usize {
+            for x in 0..resized_w as usize {
+                let pixel = rgb_image.get_pixel(x as u32, y as u32);
+                for c in 0..3 {
+                    array_hwc[[y, x, c]] = pixel[c] as f32 / 255.0;
+                }
+            }
+        }
 
         let array_chw = array_hwc.permuted_axes([2, 0, 1]);
         let array_nchw = array_chw.insert_axis(Axis(0));
@@ -84,7 +93,7 @@ impl DetPreProcessor {
 
         Ok(PreprocessedDetInput {
             tensor,
-            resized_dims: (resized_w, resized_h),
+            resized_dims: (padded_w, padded_h),
             scale_ratio,
         })
     }
@@ -106,6 +115,19 @@ fn compute_resized_dims(orig_w: u32, orig_h: u32, limit_side_len: u32) -> (u32, 
     let resized_h = ((orig_h as f64 * scale_ratio).round().max(1.0)) as u32;
 
     (resized_w, resized_h, scale_ratio)
+}
+
+fn round_up_to_multiple(value: u32, multiple: u32) -> u32 {
+    if multiple == 0 {
+        return value;
+    }
+
+    let remainder = value % multiple;
+    if remainder == 0 {
+        value
+    } else {
+        value + multiple - remainder
+    }
 }
 
 /// Rectangle specifying the area to crop for recognition preprocessing.
@@ -350,7 +372,7 @@ mod tests {
 
         let result = preprocessor.process(&image).unwrap();
 
-        assert_eq!(result.resized_dims, (960, 540));
+        assert_eq!(result.resized_dims, (960, 544));
         assert!((result.scale_ratio - 0.5).abs() < f64::EPSILON);
     }
 
@@ -361,7 +383,7 @@ mod tests {
 
         let result = preprocessor.process(&image).unwrap();
 
-        assert_eq!(result.resized_dims, (800, 600));
+        assert_eq!(result.resized_dims, (800, 608));
         assert!((result.scale_ratio - 1.0).abs() < f64::EPSILON);
     }
 
@@ -381,6 +403,18 @@ mod tests {
         assert!(min >= 0.0);
         assert!(max <= 1.0);
         assert!((max - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn detection_tensor_dims_are_padded_to_multiple_of_32() {
+        let image = solid_image(123, 77, 200);
+        let preprocessor = DetPreProcessor::new(DetPreProcessorConfig::default());
+
+        let result = preprocessor.process(&image).unwrap();
+
+        assert_eq!(result.resized_dims, (128, 96));
+        assert_eq!(result.tensor.shape(), &[1, 3, 96, 128]);
+        assert!((result.scale_ratio - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
