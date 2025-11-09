@@ -324,6 +324,7 @@ impl OcrEngine {
         self.run_from_image_impl(&image)
     }
 
+    /// Executes the full OCR pipeline on an image already loaded in memory.
     /// Returns the effective configuration for this engine.
     pub fn config(&self) -> &OcrEngineConfig {
         &self.config
@@ -349,14 +350,8 @@ impl OcrEngine {
         self.config.rec_batch_size
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn detection(&self) -> &DetectionPipeline {
-        &self.detection
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn recognition(&self) -> &RecognitionPipeline {
-        &self.recognition
+    pub fn run_from_image(&self, image: &DynamicImage) -> Result<Vec<OcrResult>, OcrError> {
+        self.run_from_image_impl(image)
     }
 
     fn run_from_image_impl(&self, image: &DynamicImage) -> Result<Vec<OcrResult>, OcrError> {
@@ -553,7 +548,7 @@ impl EngineAssets {
 }
 
 #[derive(Debug)]
-pub(crate) struct DetectionPipeline {
+struct DetectionPipeline {
     preprocessor: DetPreProcessor,
     session: Arc<DetInferenceSession>,
     postprocessor: DetPostProcessor,
@@ -609,7 +604,7 @@ impl DetectionPipeline {
 }
 
 #[derive(Debug)]
-pub(crate) struct RecognitionPipeline {
+struct RecognitionPipeline {
     preprocessor: RecPreProcessor,
     session: Arc<RecInferenceSession>,
     postprocessor: RecPostProcessor,
@@ -778,8 +773,8 @@ mod tests {
             .expect("engine should build successfully");
 
         let temp_path = temp_image_path("run_path_blank");
-        let image = image::ImageBuffer::from_pixel(64, 32, image::Rgb([0, 0, 0]));
-        image::DynamicImage::ImageRgb8(image)
+        let image_buffer = image::ImageBuffer::from_pixel(64, 32, image::Rgb([0, 0, 0]));
+        DynamicImage::ImageRgb8(image_buffer)
             .save(&temp_path)
             .expect("failed to save temporary image");
 
@@ -790,6 +785,30 @@ mod tests {
         );
 
         std::fs::remove_file(&temp_path).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn run_from_image_reuses_pipeline() -> Result<(), OcrError> {
+        let (det, rec, dict) = existing_model_paths()
+            .expect("expected PP-OCRv5 assets to be present under models/ppocrv5/");
+
+        let engine = OcrEngineBuilder::new()
+            .det_model_path(&det)
+            .rec_model_path(&rec)
+            .dictionary_path(&dict)
+            .build()
+            .expect("engine should build successfully");
+
+        let image_buffer = image::ImageBuffer::from_pixel(32, 192, image::Rgb([255, 255, 255]));
+        let dynamic_image = DynamicImage::ImageRgb8(image_buffer);
+        let results = engine.run_from_image(&dynamic_image)?;
+
+        assert!(
+            results.len() <= engine.rec_batch_size(),
+            "number of results should not exceed configured batch size"
+        );
+
         Ok(())
     }
 }

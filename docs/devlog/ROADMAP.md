@@ -58,7 +58,7 @@
 | `[x]`      | `task-api-001` | `OcrEngineBuilder` の実装 (モデルロード [4], 辞書ロード [16]、設定保持) | `feature/013-api-builder`   |
 | `[x]`      | `task-api-002` | `OcrEngine` の実装 (Facade パターン)                                    | `feature/014-api-engine`    |
 | `[x]`      | `task-api-003` | `OcrEngine::run_from_path` の実装 (E2Eパイプライン統合)                 | `feature/015-api-run-path`  |
-| `[ ]`      | `task-api-004` | `OcrEngine::run_from_image` の実装 (メモリバッファ対応)                 | `feature/016-api-run-image` |
+| `[x]`      | `task-api-004` | `OcrEngine::run_from_image` の実装 (メモリバッファ対応)                 | `feature/016-api-run-image` |
 | `[ ]`      | `task-api-005` | 公開エラー型 `OcrError` の実装と伝達                                    | `feature/017-api-error`     |
 
 ### M4: ドキュメントとリリース (Docs & Release)
