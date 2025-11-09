@@ -1,49 +1,89 @@
 use std::path::Path;
 use tract_onnx::prelude::*;
 
-// サイズを小さくして試してみる
-const DBNET_DUMMY_SHAPE: [usize; 4] = [1, 3, 320, 320]; // 小さいサイズに変更
+const DBNET_DUMMY_SHAPE: [usize; 4] = [1, 3, 320, 320];
+const SVTR_DUMMY_SHAPE: [usize; 4] = [1, 3, 48, 320];
 
 pub fn run_dbnet_dummy_inference(model_path: impl AsRef<Path>) -> TractResult<TVec<Tensor>> {
+    let dummy_input: Tensor = tract_ndarray::Array4::<f32>::zeros(DBNET_DUMMY_SHAPE)
+        .into_dyn()
+        .into();
+    run_dummy_inference(model_path, dummy_input, "DBNet")
+}
+
+pub fn run_svtr_dummy_inference(model_path: impl AsRef<Path>) -> TractResult<TVec<Tensor>> {
+    let dummy_input: Tensor =
+        tract_ndarray::Array4::<f32>::from_shape_fn(SVTR_DUMMY_SHAPE, |(_, channel, row, col)| {
+            // 正規化された斜めグラデーション: チャンネルごとにスケールを変えて変化を持たせる
+            let spatial_size = (SVTR_DUMMY_SHAPE[2] * SVTR_DUMMY_SHAPE[3]) as f32;
+            let base = (row * SVTR_DUMMY_SHAPE[3] + col) as f32 / spatial_size;
+            let channel_scale = 0.1 * channel as f32;
+            (base + channel_scale).sin()
+        })
+        .into_dyn()
+        .into();
+    run_dummy_inference(model_path, dummy_input, "SVTR")
+}
+
+fn run_dummy_inference(
+    model_path: impl AsRef<Path>,
+    dummy_input: Tensor,
+    label: &str,
+) -> TractResult<TVec<Tensor>> {
     let model_path = model_path.as_ref();
-    println!("Loading model from {:?}", model_path);
+    println!("[{}] Loading model from {:?}", label, model_path);
 
     let start = std::time::Instant::now();
 
     let mut model = tract_onnx::onnx()
-        .with_ignore_output_shapes(true) // 出力シェイプの不一致を無視
+        .with_ignore_output_shapes(true)
         .model_for_path(model_path)?;
-    println!("Model loaded, elapsed: {:?}", start.elapsed());
-
-    let dummy_input: Tensor = tract_ndarray::Array4::<f32>::zeros(DBNET_DUMMY_SHAPE)
-        .into_dyn()
-        .into();
+    println!("[{}] Model loaded, elapsed: {:?}", label, start.elapsed());
 
     model.set_input_fact(0, InferenceFact::from(&dummy_input))?;
-    println!("Input fact set, elapsed: {:?}", start.elapsed());
+    println!("[{}] Input fact set, elapsed: {:?}", label, start.elapsed());
 
-    // 各ステップのタイミングをログに出力
     println!(
-        "Starting model conversion to typed, elapsed: {:?}",
+        "[{}] Starting model conversion to typed, elapsed: {:?}",
+        label,
         start.elapsed()
     );
     let model = model.into_typed()?;
 
-    println!("Starting decluttering, elapsed: {:?}", start.elapsed());
+    println!(
+        "[{}] Starting decluttering, elapsed: {:?}",
+        label,
+        start.elapsed()
+    );
     let model = model.into_decluttered()?;
 
-    println!("Starting optimization, elapsed: {:?}", start.elapsed());
+    println!(
+        "[{}] Starting optimization, elapsed: {:?}",
+        label,
+        start.elapsed()
+    );
     let model = model.into_optimized()?;
 
-    println!("Making runnable, elapsed: {:?}", start.elapsed());
+    println!(
+        "[{}] Making runnable, elapsed: {:?}",
+        label,
+        start.elapsed()
+    );
     let model = model.into_runnable()?;
 
-    // タイムアウト機能は削除し、単純にログだけ残す
-    println!("Total preparation time: {:?}", start.elapsed());
+    println!("[{}] Total preparation time: {:?}", label, start.elapsed());
 
-    println!("Running inference, elapsed: {:?}", start.elapsed());
+    println!(
+        "[{}] Running inference, elapsed: {:?}",
+        label,
+        start.elapsed()
+    );
     let outputs = model.run(tvec!(dummy_input.into()))?;
-    println!("Inference complete, elapsed: {:?}", start.elapsed());
+    println!(
+        "[{}] Inference complete, elapsed: {:?}",
+        label,
+        start.elapsed()
+    );
 
     Ok(outputs
         .into_iter()
@@ -78,6 +118,59 @@ mod tests {
         for (i, tensor) in outputs.iter().enumerate() {
             println!("Output tensor #{} shape: {:?}", i, tensor.shape());
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn svtr_dummy_inference_runs_successfully() -> TractResult<()> {
+        let model_path = Path::new("models/ppocrv5/rec.onnx");
+        assert!(
+            model_path.exists(),
+            "expected SVTR model at {:?} to exist",
+            model_path
+        );
+
+        println!("Starting SVTR inference test");
+        let outputs = run_svtr_dummy_inference(model_path)?;
+        println!("SVTR test completed with {} outputs", outputs.len());
+
+        assert!(
+            !outputs.is_empty(),
+            "SVTR inference should return at least one output tensor"
+        );
+
+        let first = &outputs[0];
+        println!("SVTR output tensor shape: {:?}", first.shape());
+
+        let shape = first.shape().to_vec();
+        assert_eq!(
+            shape.first().copied(),
+            Some(1),
+            "SVTR batch dimension should be 1"
+        );
+        assert!(
+            shape.iter().skip(1).all(|dim| *dim > 0),
+            "SVTR tensor dimensions after batch should be positive"
+        );
+
+        let view = first.to_array_view::<f32>()?;
+        let mut min = f32::INFINITY;
+        let mut max = f32::NEG_INFINITY;
+        for value in view.iter() {
+            min = min.min(*value);
+            max = max.max(*value);
+        }
+        println!("SVTR output value range: min={:.6}, max={:.6}", min, max);
+
+        assert!(
+            min.is_finite() && max.is_finite(),
+            "SVTR output values should be finite numbers"
+        );
+        assert!(
+            max > min,
+            "SVTR output values should have a non-zero dynamic range"
+        );
 
         Ok(())
     }

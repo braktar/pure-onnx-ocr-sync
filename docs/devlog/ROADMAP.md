@@ -6,7 +6,7 @@
 
 ## 📊 開発進捗 (Overall Progress)
 
-*   [ ] **M0: 技術検証 (Proof of Concept)**
+*   [x] **M0: 技術検証 (Proof of Concept)**
 *   [ ] **M1: 検出パイプライン (Detection Pipeline)**
 *   [ ] **M2: 認識パイプライン (Recognition Pipeline)**
 *   [ ] **M3: 統合とAPI (Engine & API Layer)**
@@ -23,7 +23,7 @@
 | ステータス | タスクID       | タスク概要                                                              | 関連ブランチ / イシュー |
 | :--------- | :------------- | :---------------------------------------------------------------------- | :---------------------- |
 | `[x]`      | `task-poc-001` | `tract-onnx` で `det.onnx` (DBNet [2]) のロードとダミー実行             | `feature/001-poc-det`   |
-| `[ ]`      | `task-poc-002` | **[最重要]** `tract-onnx` で `rec.onnx` (SVTR [3]) のロードとダミー実行 | `feature/002-poc-rec`   |
+| `[x]`      | `task-poc-002` | **[最重要]** `tract-onnx` で `rec.onnx` (SVTR [3]) のロードとダミー実行 | `feature/002-poc-rec`   |
 
 ### M1: 検出パイプライン (Detection Pipeline)
 
