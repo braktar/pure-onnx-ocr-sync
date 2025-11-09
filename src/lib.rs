@@ -1,3 +1,9 @@
+pub mod preprocessing;
+
+pub use preprocessing::{
+    DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, PreprocessedDetInput,
+};
+
 use std::path::Path;
 use tract_onnx::prelude::*;
 

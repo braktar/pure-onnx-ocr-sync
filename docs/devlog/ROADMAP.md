@@ -31,7 +31,7 @@
 
 | ステータス | タスクID       | タスク概要                                                                        | 関連ブランチ / イシュー         |
 | :--------- | :------------- | :-------------------------------------------------------------------------------- | :------------------------------ |
-| `[ ]`      | `task-det-001` | 検出前処理 (`DetPreProcessor`) の実装 (Resize [10], Normalize, NCHW変換 [11, 12]) | `feature/003-det-preproc`       |
+| `[x]`      | `task-det-001` | 検出前処理 (`DetPreProcessor`) の実装 (Resize [10], Normalize, NCHW変換 [11, 12]) | `feature/003-det-preproc`       |
 | `[ ]`      | `task-det-002` | `tract` を使った検出推論の実行                                                    | `feature/004-det-infer`         |
 | `[ ]`      | `task-det-003` | 検出後処理: `imageproc::find_contours` [13] による輪郭抽出                        | `feature/005-det-post-contours` |
 | `[ ]`      | `task-det-004` | 検出後処理: `i_overlay::buffering` [14, 9] によるポリゴンオフセット (Unclip) [15] | `feature/006-det-post-offset`   |
