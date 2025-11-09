@@ -33,7 +33,7 @@
 | :--------- | :------------- | :-------------------------------------------------------------------------------- | :------------------------------ |
 | `[x]`      | `task-det-001` | 検出前処理 (`DetPreProcessor`) の実装 (Resize [10], Normalize, NCHW変換 [11, 12]) | `feature/003-det-preproc`       |
 | `[x]`      | `task-det-002` | `tract` を使った検出推論の実行                                                    | `feature/004-det-infer`         |
-| `[ ]`      | `task-det-003` | 検出後処理: `imageproc::find_contours` [13] による輪郭抽出                        | `feature/005-det-post-contours` |
+| `[x]`      | `task-det-003` | 検出後処理: `imageproc::find_contours` [13] による輪郭抽出                        | `feature/005-det-post-contours` |
 | `[ ]`      | `task-det-004` | 検出後処理: `i_overlay::buffering` [14, 9] によるポリゴンオフセット (Unclip) [15] | `feature/006-det-post-offset`   |
 | `[ ]`      | `task-det-005` | 検出後処理: 座標のスケール復元と `Polygon` への変換                               | `feature/007-det-post-scaling`  |
 
