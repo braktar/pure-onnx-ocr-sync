@@ -106,6 +106,7 @@ fn main() -> Result<(), OcrError> {
 - 2025-11-09: 認識ポストプロセッサ `RecPostProcessor` (`task-rec-005`) を実装し、推論出力から辞書マッピングと CTC デコードを統合し、フォールバックポリシーとバッチテストを追加しました。
 - 2025-11-09: 公開ビルダー `OcrEngineBuilder` (`task-api-001`) を実装し、モデル/辞書の存在チェックとロード、推論セッションの初期化、ビルダーAPIの検証ロジック、ユニットテストを追加しました。
 - 2025-11-09: `OcrEngine` ファサード (`task-api-002`) を実装し、検出・認識パイプラインの構築、同期実行ポリシーの整理、テストによる初期化確認を行いました。
+- 2025-11-09: `OcrEngine::run_from_path` (`task-api-003`) を実装し、画像パスからのE2E OCR処理、詳細なエラーハンドリング、ポリゴン座標とテキスト結果を束ねた `OcrResult` の返却を整備しました。
 
 ## APIリファレンス (要約)
 
@@ -148,6 +149,14 @@ fn main() -> Result<(), OcrError> {
   * `ModelLoad { path, source }`: `tract` [9, 10] によるモデルロード失敗 (オペレータ非互換 [43, 46] など)
   * `Dictionary { source }`: 辞書ファイルのロード失敗
   * `InvalidConfiguration { message }`: 無効な設定値
+  * `ImageDecode { path, source }`: 画像デコード処理の失敗
+  * `DetectionPreprocess { source }`: 検出前処理の失敗
+  * `DetectionInference { source }`: 検出モデル推論の失敗
+  * `DetectionPostProcess { source }`: 検出後処理の失敗
+  * `RecognitionPreprocess { source }`: 認識前処理の失敗
+  * `RecognitionInference { source }`: 認識モデル推論の失敗
+  * `RecognitionPostProcess { source }`: 認識後処理 (CTCデコード) の失敗
+  * `PipelineMismatch { detection_regions, recognition_results }`: 検出領域数と認識結果数が一致しない場合
 
 ## 貢献 (Contributing)
 

@@ -1,13 +1,19 @@
+use crate::ctc::DecodedSequence;
 use crate::detection::DetInferenceSession;
 use crate::dictionary::{DictionaryError, RecDictionary};
 use crate::postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
-    DetPostProcessor, DetPostProcessorConfig,
+    DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError,
 };
 use crate::preprocessing::{
-    DetPreProcessor, DetPreProcessorConfig, RecPreProcessor, RecPreProcessorConfig,
+    DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, RecPreProcessor,
+    RecPreProcessorConfig, RecPreProcessorError, RecTextRegion,
 };
-use crate::recognition::{RecInferenceSession, RecPostProcessor, RecPostProcessorConfig};
+use crate::recognition::{
+    RecInferenceSession, RecPostProcessor, RecPostProcessorConfig, RecPostProcessorError,
+};
+use geo_types::Polygon;
+use image::{DynamicImage, GenericImageView, ImageError};
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -31,6 +37,25 @@ pub enum OcrError {
     Dictionary { source: DictionaryError },
     /// The provided configuration contained invalid values.
     InvalidConfiguration { message: String },
+    /// Failed to decode the input image.
+    ImageDecode { source: ImageError, path: PathBuf },
+    /// Detection preprocessing failed.
+    DetectionPreprocess { source: DetPreProcessorError },
+    /// Detection inference failed.
+    DetectionInference { source: TractError },
+    /// Detection post-processing failed.
+    DetectionPostProcess { source: DetPostProcessorError },
+    /// Recognition preprocessing failed.
+    RecognitionPreprocess { source: RecPreProcessorError },
+    /// Recognition inference failed.
+    RecognitionInference { source: TractError },
+    /// Recognition post-processing failed.
+    RecognitionPostProcess { source: RecPostProcessorError },
+    /// The number of recognition results did not match detected regions.
+    PipelineMismatch {
+        detection_regions: usize,
+        recognition_results: usize,
+    },
 }
 
 impl fmt::Display for OcrError {
@@ -47,7 +72,129 @@ impl fmt::Display for OcrError {
             }
             OcrError::Dictionary { source } => write!(f, "failed to load dictionary: {}", source),
             OcrError::InvalidConfiguration { message } => write!(f, "{}", message),
+            OcrError::ImageDecode { path, source } => {
+                write!(f, "failed to decode image {:?}: {}", path, source)
+            }
+            OcrError::DetectionPreprocess { source } => {
+                write!(f, "detection preprocessing failed: {}", source)
+            }
+            OcrError::DetectionInference { source } => {
+                write!(f, "detection inference failed: {}", source)
+            }
+            OcrError::DetectionPostProcess { source } => {
+                write!(f, "detection post-processing failed: {}", source)
+            }
+            OcrError::RecognitionPreprocess { source } => {
+                write!(f, "recognition preprocessing failed: {}", source)
+            }
+            OcrError::RecognitionInference { source } => {
+                write!(f, "recognition inference failed: {}", source)
+            }
+            OcrError::RecognitionPostProcess { source } => {
+                write!(f, "recognition post-processing failed: {}", source)
+            }
+            OcrError::PipelineMismatch {
+                detection_regions,
+                recognition_results,
+            } => write!(
+                f,
+                "pipeline mismatch: detection produced {} regions but recognition returned {} results",
+                detection_regions, recognition_results
+            ),
         }
+    }
+}
+
+fn polygons_to_text_regions(
+    polygons: &[Polygon<f64>],
+    image_dims: (u32, u32),
+) -> Vec<RecTextRegion> {
+    polygons
+        .iter()
+        .map(|polygon| polygon_to_text_region(polygon, image_dims))
+        .collect()
+}
+
+fn polygon_to_text_region(polygon: &Polygon<f64>, image_dims: (u32, u32)) -> RecTextRegion {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    for point in polygon.exterior().points() {
+        let x = point.x();
+        let y = point.y();
+        if x < min_x {
+            min_x = x;
+        }
+        if x > max_x {
+            max_x = x;
+        }
+        if y < min_y {
+            min_y = y;
+        }
+        if y > max_y {
+            max_y = y;
+        }
+    }
+
+    let image_width = image_dims.0.max(1);
+    let image_height = image_dims.1.max(1);
+    let width_limit = image_width as f64;
+    let height_limit = image_height as f64;
+
+    let mut x1 = min_x.floor().max(0.0);
+    let mut y1 = min_y.floor().max(0.0);
+    let mut x2 = max_x.ceil().min(width_limit);
+    let mut y2 = max_y.ceil().min(height_limit);
+
+    if x2 <= x1 {
+        x2 = (x1 + 1.0).min(width_limit);
+    }
+    if y2 <= y1 {
+        y2 = (y1 + 1.0).min(height_limit);
+    }
+
+    if x2 <= x1 {
+        x1 = (width_limit - 1.0).max(0.0);
+        x2 = width_limit;
+    }
+    if y2 <= y1 {
+        y1 = (height_limit - 1.0).max(0.0);
+        y2 = height_limit;
+    }
+
+    let mut x = x1.floor() as u32;
+    let mut y = y1.floor() as u32;
+    if x >= image_width {
+        x = image_width - 1;
+    }
+    if y >= image_height {
+        y = image_height - 1;
+    }
+
+    let mut width = (x2 - x1).ceil().max(1.0) as u32;
+    let mut height = (y2 - y1).ceil().max(1.0) as u32;
+
+    if x + width > image_width {
+        width = image_width.saturating_sub(x);
+    }
+    if y + height > image_height {
+        height = image_height.saturating_sub(y);
+    }
+
+    if width == 0 {
+        width = 1;
+    }
+    if height == 0 {
+        height = 1;
+    }
+
+    RecTextRegion {
+        x,
+        y,
+        width,
+        height,
     }
 }
 
@@ -59,6 +206,14 @@ impl Error for OcrError {
             OcrError::ModelLoad { .. } => None,
             OcrError::Dictionary { source } => Some(source),
             OcrError::InvalidConfiguration { .. } => None,
+            OcrError::ImageDecode { source, .. } => Some(source),
+            OcrError::DetectionPreprocess { source } => Some(source),
+            OcrError::DetectionInference { .. } => None,
+            OcrError::DetectionPostProcess { source } => Some(source),
+            OcrError::RecognitionPreprocess { source } => Some(source),
+            OcrError::RecognitionInference { .. } => None,
+            OcrError::RecognitionPostProcess { source } => Some(source),
+            OcrError::PipelineMismatch { .. } => None,
         }
     }
 }
@@ -107,11 +262,17 @@ impl Default for OcrEngineConfig {
 #[derive(Debug)]
 pub struct OcrEngine {
     assets: EngineAssets,
-    #[allow(dead_code)]
     detection: DetectionPipeline,
-    #[allow(dead_code)]
     recognition: RecognitionPipeline,
     config: OcrEngineConfig,
+}
+
+/// Result of running the full OCR pipeline for a single detected region.
+#[derive(Debug, Clone)]
+pub struct OcrResult {
+    pub text: String,
+    pub confidence: f32,
+    pub bounding_box: Polygon<f64>,
 }
 
 impl OcrEngine {
@@ -153,6 +314,16 @@ impl OcrEngine {
         }
     }
 
+    /// Executes the full OCR pipeline on an image located on disk.
+    pub fn run_from_path<P: AsRef<Path>>(&self, path: P) -> Result<Vec<OcrResult>, OcrError> {
+        let path_ref = path.as_ref();
+        let image = image::open(path_ref).map_err(|source| OcrError::ImageDecode {
+            source,
+            path: path_ref.to_path_buf(),
+        })?;
+        self.run_from_image_impl(&image)
+    }
+
     /// Returns the effective configuration for this engine.
     pub fn config(&self) -> &OcrEngineConfig {
         &self.config
@@ -186,6 +357,36 @@ impl OcrEngine {
     #[allow(dead_code)]
     pub(crate) fn recognition(&self) -> &RecognitionPipeline {
         &self.recognition
+    }
+
+    fn run_from_image_impl(&self, image: &DynamicImage) -> Result<Vec<OcrResult>, OcrError> {
+        let image_dims = image.dimensions();
+        let polygons = self.detection.detect_polygons(image, image_dims)?;
+        if polygons.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let regions = polygons_to_text_regions(&polygons, image_dims);
+        let sequences = self.recognition.run(image, &regions)?;
+
+        if sequences.len() != polygons.len() {
+            return Err(OcrError::PipelineMismatch {
+                detection_regions: polygons.len(),
+                recognition_results: sequences.len(),
+            });
+        }
+
+        let results = polygons
+            .into_iter()
+            .zip(sequences.into_iter())
+            .map(|(polygon, sequence)| OcrResult {
+                text: sequence.text,
+                confidence: sequence.confidence,
+                bounding_box: polygon,
+            })
+            .collect();
+
+        Ok(results)
     }
 }
 
@@ -353,19 +554,13 @@ impl EngineAssets {
 
 #[derive(Debug)]
 pub(crate) struct DetectionPipeline {
-    #[allow(dead_code)]
     preprocessor: DetPreProcessor,
-    #[allow(dead_code)]
     session: Arc<DetInferenceSession>,
-    #[allow(dead_code)]
     postprocessor: DetPostProcessor,
-    #[allow(dead_code)]
     unclipper: DetPolygonUnclipper,
-    #[allow(dead_code)]
     scaler: DetPolygonScaler,
 }
 
-#[allow(dead_code)]
 impl DetectionPipeline {
     fn new(
         session: Arc<DetInferenceSession>,
@@ -383,40 +578,43 @@ impl DetectionPipeline {
         }
     }
 
-    pub(crate) fn preprocessor(&self) -> &DetPreProcessor {
-        &self.preprocessor
-    }
+    fn detect_polygons(
+        &self,
+        image: &DynamicImage,
+        image_dims: (u32, u32),
+    ) -> Result<Vec<Polygon<f64>>, OcrError> {
+        let preprocessed = self
+            .preprocessor
+            .process(image)
+            .map_err(|source| OcrError::DetectionPreprocess { source })?;
 
-    pub(crate) fn session(&self) -> &Arc<DetInferenceSession> {
-        &self.session
-    }
+        let inference = self
+            .session
+            .run(&preprocessed)
+            .map_err(|source| OcrError::DetectionInference { source })?;
 
-    pub(crate) fn postprocessor(&self) -> &DetPostProcessor {
-        &self.postprocessor
-    }
+        let contours = self
+            .postprocessor
+            .process(&inference)
+            .map_err(|source| OcrError::DetectionPostProcess { source })?;
 
-    pub(crate) fn unclipper(&self) -> &DetPolygonUnclipper {
-        &self.unclipper
-    }
+        let unclipped = self.unclipper.unclip_contours(&contours);
 
-    pub(crate) fn scaler(&self) -> &DetPolygonScaler {
-        &self.scaler
+        let scaled = self
+            .scaler
+            .scale_polygons(&unclipped, preprocessed.scale_ratio, image_dims);
+
+        Ok(scaled)
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct RecognitionPipeline {
-    #[allow(dead_code)]
     preprocessor: RecPreProcessor,
-    #[allow(dead_code)]
     session: Arc<RecInferenceSession>,
-    #[allow(dead_code)]
     postprocessor: RecPostProcessor,
-    #[allow(dead_code)]
-    dictionary: Arc<RecDictionary>,
 }
 
-#[allow(dead_code)]
 impl RecognitionPipeline {
     fn new(
         session: Arc<RecInferenceSession>,
@@ -430,24 +628,30 @@ impl RecognitionPipeline {
             preprocessor: RecPreProcessor::new(preprocessor),
             session,
             postprocessor,
-            dictionary,
         }
     }
 
-    pub(crate) fn preprocessor(&self) -> &RecPreProcessor {
-        &self.preprocessor
-    }
+    fn run(
+        &self,
+        image: &DynamicImage,
+        regions: &[RecTextRegion],
+    ) -> Result<Vec<DecodedSequence>, OcrError> {
+        let batch = self
+            .preprocessor
+            .process(image, regions)
+            .map_err(|source| OcrError::RecognitionPreprocess { source })?;
 
-    pub(crate) fn session(&self) -> &Arc<RecInferenceSession> {
-        &self.session
-    }
+        let inference = self
+            .session
+            .run(&batch)
+            .map_err(|source| OcrError::RecognitionInference { source })?;
 
-    pub(crate) fn postprocessor(&self) -> &RecPostProcessor {
-        &self.postprocessor
-    }
+        let sequences = self
+            .postprocessor
+            .process(&inference)
+            .map_err(|source| OcrError::RecognitionPostProcess { source })?;
 
-    pub(crate) fn dictionary(&self) -> &Arc<RecDictionary> {
-        &self.dictionary
+        Ok(sequences)
     }
 }
 
@@ -455,6 +659,7 @@ impl RecognitionPipeline {
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn existing_model_paths() -> Option<(PathBuf, PathBuf, PathBuf)> {
         let det = Path::new("models/ppocrv5/det.onnx");
@@ -465,6 +670,14 @@ mod tests {
         } else {
             None
         }
+    }
+
+    fn temp_image_path(prefix: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}.png", prefix, timestamp))
     }
 
     #[test]
@@ -553,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn detection_and_recognition_pipelines_are_initialized() {
+    fn run_from_path_processes_blank_image() -> Result<(), OcrError> {
         let (det, rec, dict) = existing_model_paths()
             .expect("expected PP-OCRv5 assets to be present under models/ppocrv5/");
 
@@ -564,20 +777,19 @@ mod tests {
             .build()
             .expect("engine should build successfully");
 
-        let detection = engine.detection();
-        assert!(Arc::strong_count(detection.session()) >= 1);
-        assert!(Arc::strong_count(engine.recognition().session()) >= 1);
+        let temp_path = temp_image_path("run_path_blank");
+        let image = image::ImageBuffer::from_pixel(64, 32, image::Rgb([0, 0, 0]));
+        image::DynamicImage::ImageRgb8(image)
+            .save(&temp_path)
+            .expect("failed to save temporary image");
 
-        // The detection pipeline exposes all required stages.
-        detection.preprocessor();
-        detection.postprocessor();
-        detection.unclipper();
-        detection.scaler();
+        let results = engine.run_from_path(&temp_path)?;
+        assert!(
+            results.len() <= engine.rec_batch_size(),
+            "number of results should not exceed configured batch size"
+        );
 
-        // Recognition pipeline provides access to pre/post processing and dictionary.
-        let recognition = engine.recognition();
-        recognition.preprocessor();
-        recognition.postprocessor();
-        assert!(Arc::strong_count(recognition.dictionary()) >= 1);
+        std::fs::remove_file(&temp_path).ok();
+        Ok(())
     }
 }

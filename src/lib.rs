@@ -9,7 +9,7 @@ pub mod recognition;
 pub use ctc::{CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence};
 pub use detection::{DetInferenceOutput, DetInferenceSession};
 pub use dictionary::{DictionaryError, RecDictionary};
-pub use engine::{OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError};
+pub use engine::{OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError, OcrResult};
 pub use geo_types::{Point, Polygon};
 pub use postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
