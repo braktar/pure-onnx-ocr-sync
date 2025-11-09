@@ -104,6 +104,7 @@ fn main() -> Result<(), OcrError> {
 - 2025-11-09: 認識辞書ローダー `RecDictionary` (`task-rec-003`) を実装し、UTF-8 辞書ファイルのロード、重複検知、インデックス/トークン相互参照、およびユニットテストを整備しました。
 - 2025-11-09: CTC Greedy デコーダー `CtcGreedyDecoder` (`task-rec-004`) を実装し、重複圧縮とブランク除去、確率に基づく信頼度計算、辞書連携、およびユニットテストを追加しました。
 - 2025-11-09: 認識ポストプロセッサ `RecPostProcessor` (`task-rec-005`) を実装し、推論出力から辞書マッピングと CTC デコードを統合し、フォールバックポリシーとバッチテストを追加しました。
+- 2025-11-09: 公開ビルダー `OcrEngineBuilder` (`task-api-001`) を実装し、モデル/辞書の存在チェックとロード、推論セッションの初期化、ビルダーAPIの検証ロジック、ユニットテストを追加しました。
 
 ## APIリファレンス (要約)
 
@@ -141,11 +142,11 @@ fn main() -> Result<(), OcrError> {
 
 ライブラリ内で発生する可能性のあるエラー。
 
-  * `IoError(...)`: ファイルI/Oエラー
-  * `ImageError(...)`: `image` クレート [12, 13, 14] によるデコードエラー
-  * `ModelLoadError(String)`: `tract` [9, 10] によるモデルロード失敗 (オペレータ非互換 [43, 46] など)
-  * `InferenceError(String)`: 推論実行時のエラー
-  * `ProcessingError(String)`: 前後処理ロジックのエラー
+  * `MissingField { field }`: ビルダーで必須項目が指定されていない場合
+  * `Io { path, source }`: ファイルI/Oエラー
+  * `ModelLoad { path, source }`: `tract` [9, 10] によるモデルロード失敗 (オペレータ非互換 [43, 46] など)
+  * `Dictionary { source }`: 辞書ファイルのロード失敗
+  * `InvalidConfiguration { message }`: 無効な設定値
 
 ## 貢献 (Contributing)
 

@@ -55,7 +55,7 @@
 
 | ステータス | タスクID       | タスク概要                                                              | 関連ブランチ / イシュー     |
 | :--------- | :------------- | :---------------------------------------------------------------------- | :-------------------------- |
-| `[ ]`      | `task-api-001` | `OcrEngineBuilder` の実装 (モデルロード [4], 辞書ロード [16]、設定保持) | `feature/013-api-builder`   |
+| `[x]`      | `task-api-001` | `OcrEngineBuilder` の実装 (モデルロード [4], 辞書ロード [16]、設定保持) | `feature/013-api-builder`   |
 | `[ ]`      | `task-api-002` | `OcrEngine` の実装 (Facade パターン)                                    | `feature/014-api-engine`    |
 | `[ ]`      | `task-api-003` | `OcrEngine::run_from_path` の実装 (E2Eパイプライン統合)                 | `feature/015-api-run-path`  |
 | `[ ]`      | `task-api-004` | `OcrEngine::run_from_image` の実装 (メモリバッファ対応)                 | `feature/016-api-run-image` |

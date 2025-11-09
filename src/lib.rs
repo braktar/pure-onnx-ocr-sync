@@ -1,6 +1,7 @@
 pub mod ctc;
 pub mod detection;
 pub mod dictionary;
+pub mod engine;
 pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
@@ -8,6 +9,8 @@ pub mod recognition;
 pub use ctc::{CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence};
 pub use detection::{DetInferenceOutput, DetInferenceSession};
 pub use dictionary::{DictionaryError, RecDictionary};
+pub use engine::{OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError};
+pub use geo_types::{Point, Polygon};
 pub use postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
     DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError, DetScaleRounding,
