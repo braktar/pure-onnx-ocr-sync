@@ -73,6 +73,32 @@ fn main() -> Result<(), OcrError> {
 }
 ```
 
+## 動作確認バイナリ `ocr_smoke`
+
+`test_ocr.py` に相当する動作確認を Rust のみで実施したい場合は、付属の `ocr_smoke` バイナリを利用できます。
+
+- 既定で `models/ppocrv5` 配下の `det.onnx`, `rec.onnx`, `ppocrv5_dict.txt` を参照します。
+- 使い方:
+
+```bash
+cargo run --bin ocr_smoke -- path/to/image.jpg
+
+# モデルや設定を上書きする例
+cargo run --bin ocr_smoke -- path/to/image.jpg \
+  --det-model models/ppocrv5/det.onnx \
+  --rec-model models/ppocrv5/rec.onnx \
+  --dictionary models/ppocrv5/ppocrv5_dict.txt \
+  --det-limit-side-len 960 \
+  --det-unclip-ratio 1.5 \
+  --rec-batch-size 8
+```
+
+推論時間、検出されたテキストと信頼度、ポリゴン座標が標準出力に整形されます。入力画像やモデルが見つからない場合はエラーメッセージと共に終了します。
+
+内部では検出前処理が長辺リサイズ後に 32px 単位でゼロパディングを行い、DBNet の入力制約（32 の倍数）を満たすようになっています。
+
+> **現在の制約:** モデルはロードされ推論まで到達しますが、実際の OCR 結果は未だ安定しておらずテキストが崩れます。原因の切り分けとデバッグは今後の課題です。
+
 ### よくあるエラー
 
 - `ModelLoad`: `tract` が未対応のONNXオペレータ（例: `LayerNormalization`, `Scan`）を検出した場合に発生します。
