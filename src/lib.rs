@@ -1,3 +1,15 @@
+//! # Pure ONNX OCR
+//!
+//! A Pure Rust OCR pipeline that mirrors the PaddleOCR DBNet + SVTR stack.
+//! The crate exposes ergonomic builders and processing stages that let you
+//! load ONNX models, prepare image batches, and decode recognition logits
+//! without any C/C++ dependencies.
+//!
+//! Most consumers interact with [`OcrEngineBuilder`] to construct an
+//! [`OcrEngine`], then call [`OcrEngine::run_from_path`] or
+//! [`OcrEngine::run_from_image`].  Lower-level modules remain available
+//! when you need to plug specific stages into an existing pipeline.
+
 pub mod ctc;
 pub mod detection;
 pub mod dictionary;
@@ -6,10 +18,15 @@ pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
 
+/// Re-export of the CTC decoding utilities so applications can customise
+/// post-processing while keeping consistent types.
 pub use ctc::{CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence};
+/// Re-export of detection inference helpers for direct DBNet integration.
 pub use detection::{DetInferenceOutput, DetInferenceSession};
 pub use dictionary::{DictionaryError, RecDictionary};
+/// High-level façade providing an ergonomic OCR API.
 pub use engine::{OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError, OcrResult};
+/// Geometry primitives surfaced at the crate root for convenience.
 pub use geo_types::{Point, Polygon};
 pub use postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
@@ -32,6 +49,27 @@ use tract_onnx::prelude::*;
 const DBNET_DUMMY_SHAPE: [usize; 4] = [1, 3, 320, 320];
 const SVTR_DUMMY_SHAPE: [usize; 4] = [1, 3, 48, 320];
 
+/// Run a `tract-onnx` dummy inference against a DBNet detection model.
+///
+/// The helper loads `model_path`, feeds a zero-filled tensor with the
+/// expected DBNet input shape, and returns the produced tensors.  The
+/// logs include timing information for each optimisation step, which is
+/// particularly helpful when first validating an ONNX export.
+///
+/// # Examples
+///
+/// ```no_run
+/// use pure_onnx_ocr::run_dbnet_dummy_inference;
+///
+/// let outputs = run_dbnet_dummy_inference("models/ppocrv5/det.onnx")
+///     .expect("model should load and execute");
+/// assert!(!outputs.is_empty());
+/// ```
+///
+/// # Errors
+///
+/// Returns [`tract_onnx::prelude::TractError`] when the model cannot be
+/// loaded, optimised, or executed with the provided dummy tensor.
 pub fn run_dbnet_dummy_inference(model_path: impl AsRef<Path>) -> TractResult<TVec<Tensor>> {
     let dummy_input: Tensor = tract_ndarray::Array4::<f32>::zeros(DBNET_DUMMY_SHAPE)
         .into_dyn()
@@ -39,6 +77,27 @@ pub fn run_dbnet_dummy_inference(model_path: impl AsRef<Path>) -> TractResult<TV
     run_dummy_inference(model_path, dummy_input, "DBNet")
 }
 
+/// Run a `tract-onnx` dummy inference against an SVTR recognition model.
+///
+/// The helper constructs a synthetic sinusoidal input tensor to exercise
+/// the model, runs end-to-end optimisation, and returns the resulting
+/// logits.  Use this to confirm that the SVTR export can be handled by
+/// `tract-onnx` before attempting full OCR integration.
+///
+/// # Examples
+///
+/// ```no_run
+/// use pure_onnx_ocr::run_svtr_dummy_inference;
+///
+/// let outputs = run_svtr_dummy_inference("models/ppocrv5/rec.onnx")
+///     .expect("model should load and execute");
+/// assert!(!outputs.is_empty());
+/// ```
+///
+/// # Errors
+///
+/// Returns [`tract_onnx::prelude::TractError`] when the model cannot be
+/// loaded, optimised, or executed.
 pub fn run_svtr_dummy_inference(model_path: impl AsRef<Path>) -> TractResult<TVec<Tensor>> {
     let dummy_input: Tensor =
         tract_ndarray::Array4::<f32>::from_shape_fn(SVTR_DUMMY_SHAPE, |(_, channel, row, col)| {

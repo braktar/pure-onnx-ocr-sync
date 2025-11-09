@@ -123,6 +123,7 @@ fn main() -> Result<(), OcrError> {
 - 2025-11-09: `OcrEngine::run_from_image` (`task-api-004`) を実装し、メモリ上の画像入力に対応。
 - 2025-11-09: 公開エラー型 `OcrError` (`task-api-005`) を整備し、エラーパスを統一。
 - 2025-11-09: ドキュメント整備タスク `task-doc-001` を完了。READMEの再構成と英語版ドキュメントを追加。
+- 2025-11-09: 公開APIの Rustdoc コメント (`task-doc-002`) を整備し、`cargo doc` で生成物を確認。
 
 ## コントリビューション
 
