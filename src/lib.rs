@@ -1,6 +1,7 @@
 pub mod detection;
 pub mod postprocessing;
 pub mod preprocessing;
+pub mod recognition;
 
 pub use detection::{DetInferenceOutput, DetInferenceSession};
 pub use postprocessing::{
@@ -13,6 +14,7 @@ pub use preprocessing::{
     PreprocessedRecBatch, RecPreProcessor, RecPreProcessorConfig, RecPreProcessorError,
     RecTextRegion,
 };
+pub use recognition::{RecInferenceOutput, RecInferenceSession};
 
 use std::path::Path;
 use tract_onnx::prelude::*;
