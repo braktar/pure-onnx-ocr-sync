@@ -105,6 +105,30 @@ impl fmt::Display for OcrError {
     }
 }
 
+impl From<DetPreProcessorError> for OcrError {
+    fn from(source: DetPreProcessorError) -> Self {
+        OcrError::DetectionPreprocess { source }
+    }
+}
+
+impl From<DetPostProcessorError> for OcrError {
+    fn from(source: DetPostProcessorError) -> Self {
+        OcrError::DetectionPostProcess { source }
+    }
+}
+
+impl From<RecPreProcessorError> for OcrError {
+    fn from(source: RecPreProcessorError) -> Self {
+        OcrError::RecognitionPreprocess { source }
+    }
+}
+
+impl From<RecPostProcessorError> for OcrError {
+    fn from(source: RecPostProcessorError) -> Self {
+        OcrError::RecognitionPostProcess { source }
+    }
+}
+
 fn polygons_to_text_regions(
     polygons: &[Polygon<f64>],
     image_dims: (u32, u32),
@@ -578,10 +602,7 @@ impl DetectionPipeline {
         image: &DynamicImage,
         image_dims: (u32, u32),
     ) -> Result<Vec<Polygon<f64>>, OcrError> {
-        let preprocessed = self
-            .preprocessor
-            .process(image)
-            .map_err(|source| OcrError::DetectionPreprocess { source })?;
+        let preprocessed = self.preprocessor.process(image).map_err(OcrError::from)?;
 
         let inference = self
             .session
@@ -591,7 +612,7 @@ impl DetectionPipeline {
         let contours = self
             .postprocessor
             .process(&inference)
-            .map_err(|source| OcrError::DetectionPostProcess { source })?;
+            .map_err(OcrError::from)?;
 
         let unclipped = self.unclipper.unclip_contours(&contours);
 
@@ -634,7 +655,7 @@ impl RecognitionPipeline {
         let batch = self
             .preprocessor
             .process(image, regions)
-            .map_err(|source| OcrError::RecognitionPreprocess { source })?;
+            .map_err(OcrError::from)?;
 
         let inference = self
             .session
@@ -644,7 +665,7 @@ impl RecognitionPipeline {
         let sequences = self
             .postprocessor
             .process(&inference)
-            .map_err(|source| OcrError::RecognitionPostProcess { source })?;
+            .map_err(OcrError::from)?;
 
         Ok(sequences)
     }
@@ -653,6 +674,10 @@ impl RecognitionPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ctc::CtcGreedyDecoderError;
+    use crate::postprocessing::DetPostProcessorError;
+    use crate::preprocessing::{DetPreProcessorError, RecPreProcessorError};
+    use crate::recognition::RecPostProcessorError;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -810,5 +835,29 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn component_errors_convert_to_ocr_error_variants() {
+        match OcrError::from(DetPreProcessorError::EmptyImage) {
+            OcrError::DetectionPreprocess { .. } => {}
+            other => panic!("expected DetectionPreprocess variant, got {:?}", other),
+        }
+
+        match OcrError::from(DetPostProcessorError::EmptyProbabilityMap) {
+            OcrError::DetectionPostProcess { .. } => {}
+            other => panic!("expected DetectionPostProcess variant, got {:?}", other),
+        }
+
+        match OcrError::from(RecPreProcessorError::EmptyRegions) {
+            OcrError::RecognitionPreprocess { .. } => {}
+            other => panic!("expected RecognitionPreprocess variant, got {:?}", other),
+        }
+
+        let rec_post_err = RecPostProcessorError::from(CtcGreedyDecoderError::EmptyBatch);
+        match OcrError::from(rec_post_err) {
+            OcrError::RecognitionPostProcess { .. } => {}
+            other => panic!("expected RecognitionPostProcess variant, got {:?}", other),
+        }
     }
 }

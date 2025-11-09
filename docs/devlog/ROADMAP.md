@@ -9,7 +9,7 @@
 *   [x] **M0: 技術検証 (Proof of Concept)**
 *   [x] **M1: 検出パイプライン (Detection Pipeline)**
 *   [x] **M2: 認識パイプライン (Recognition Pipeline)**
-*   [ ] **M3: 統合とAPI (Engine & API Layer)**
+*   [x] **M3: 統合とAPI (Engine & API Layer)**
 *   [ ] **M4: ドキュメントとリリース (Docs & Release)**
 
 ---
@@ -59,7 +59,7 @@
 | `[x]`      | `task-api-002` | `OcrEngine` の実装 (Facade パターン)                                    | `feature/014-api-engine`    |
 | `[x]`      | `task-api-003` | `OcrEngine::run_from_path` の実装 (E2Eパイプライン統合)                 | `feature/015-api-run-path`  |
 | `[x]`      | `task-api-004` | `OcrEngine::run_from_image` の実装 (メモリバッファ対応)                 | `feature/016-api-run-image` |
-| `[ ]`      | `task-api-005` | 公開エラー型 `OcrError` の実装と伝達                                    | `feature/017-api-error`     |
+| `[x]`      | `task-api-005` | 公開エラー型 `OcrError` の実装と伝達                                    | `feature/017-api-error`     |
 
 ### M4: ドキュメントとリリース (Docs & Release)
 
