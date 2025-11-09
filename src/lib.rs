@@ -1,9 +1,11 @@
+pub mod ctc;
 pub mod detection;
 pub mod dictionary;
 pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
 
+pub use ctc::{CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence};
 pub use detection::{DetInferenceOutput, DetInferenceSession};
 pub use dictionary::{DictionaryError, RecDictionary};
 pub use postprocessing::{
