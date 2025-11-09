@@ -3,7 +3,10 @@ pub mod postprocessing;
 pub mod preprocessing;
 
 pub use detection::{DetInferenceOutput, DetInferenceSession};
-pub use postprocessing::{DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError};
+pub use postprocessing::{
+    DetPolygonUnclipper, DetPolygonUnclipperConfig, DetPostProcessor, DetPostProcessorConfig,
+    DetPostProcessorError, DetUnclipLineJoin,
+};
 pub use preprocessing::{
     DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, PreprocessedDetInput,
 };
