@@ -120,20 +120,37 @@ impl CtcGreedyDecoder {
             let mut previous_symbol: Option<usize> = None;
             let mut text = String::new();
             let mut token_indices = Vec::new();
-            let mut confidence_sum = 0.0f32;
+            let mut probability_sum = 0.0f64;
             let mut confidence_count = 0usize;
             let mut fallback_count = 0usize;
 
             for t in 0..max_steps {
                 let step = logits.slice(s![batch_index, t, ..]);
 
-                let (mut best_index, mut best_value) = (0usize, f32::NEG_INFINITY);
+                let mut best_index = 0usize;
+                let mut best_value = f32::NEG_INFINITY;
+                let mut row_sum = 0.0f32;
+                let mut min_value = f32::INFINITY;
+                let mut max_value = f32::NEG_INFINITY;
                 for (idx, value) in step.iter().enumerate() {
-                    if value > &best_value {
+                    if *value > best_value {
                         best_value = *value;
                         best_index = idx;
                     }
+                    row_sum += *value;
+                    if *value < min_value {
+                        min_value = *value;
+                    }
+                    if *value > max_value {
+                        max_value = *value;
+                    }
                 }
+
+                let is_probability_distribution = min_value.is_finite()
+                    && max_value.is_finite()
+                    && min_value >= -1e-4
+                    && max_value <= 1.0 + 1e-4
+                    && (row_sum - 1.0).abs() <= 1e-3;
 
                 if best_index == self.config.blank_id {
                     previous_symbol = None;
@@ -144,18 +161,28 @@ impl CtcGreedyDecoder {
                     continue;
                 }
 
-                let mut sum = 0.0f32;
-                for value in step.iter() {
-                    sum += (value - best_value).exp();
-                }
-                let probability = if sum > 0.0 { 1.0 / sum } else { 0.0 };
+                let probability = if is_probability_distribution {
+                    best_value.clamp(0.0, 1.0)
+                } else {
+                    let max_logit = best_value as f64;
+                    let mut sum_exp = 0.0f64;
+                    for value in step.iter() {
+                        sum_exp += ((*value as f64) - max_logit).exp();
+                    }
+
+                    if sum_exp.is_finite() && sum_exp > 0.0 {
+                        (((best_value as f64) - max_logit).exp() / sum_exp).clamp(0.0, 1.0) as f32
+                    } else {
+                        0.0
+                    }
+                };
 
                 if best_index >= dictionary.len() {
                     if let Some(fallback) = &self.config.fallback_token {
                         text.push_str(fallback);
                         token_indices.push(best_index);
                         fallback_count += 1;
-                        confidence_sum += probability;
+                        probability_sum += probability as f64;
                         confidence_count += 1;
                         previous_symbol = Some(best_index);
                         continue;
@@ -173,16 +200,16 @@ impl CtcGreedyDecoder {
                 text.push_str(token);
                 token_indices.push(best_index);
 
-                confidence_sum += probability;
+                probability_sum += probability as f64;
                 confidence_count += 1;
 
                 previous_symbol = Some(best_index);
             }
 
             let confidence = if confidence_count == 0 {
-                0.0
+                1.0
             } else {
-                confidence_sum / confidence_count as f32
+                (probability_sum / confidence_count as f64).clamp(0.0, 1.0) as f32
             };
 
             results.push(DecodedSequence {
@@ -271,7 +298,7 @@ mod tests {
 
         assert_eq!(sequences[0].text, "");
         assert!(sequences[0].token_indices.is_empty());
-        assert_eq!(sequences[0].confidence, 0.0);
+        assert_eq!(sequences[0].confidence, 1.0);
         assert_eq!(sequences[0].fallback_count, 0);
     }
 
@@ -321,5 +348,50 @@ mod tests {
         assert_eq!(first.text, "[UNK]");
         assert_eq!(first.fallback_count, 1);
         assert_eq!(first.token_indices, vec![2]);
+    }
+
+    #[test]
+    fn computes_confidence_from_probabilities() {
+        let probability_rows = [
+            [0.92f32, 0.03, 0.03, 0.02], // blank
+            [0.05, 0.8, 0.1, 0.05],      // 'a'
+            [0.05, 0.7, 0.2, 0.05],      // duplicate 'a' (ignored)
+            [0.9, 0.05, 0.03, 0.02],     // blank
+            [0.05, 0.05, 0.85, 0.05],    // 'b'
+            [0.02, 0.01, 0.02, 0.95],    // 'c'
+            [0.9, 0.05, 0.03, 0.02],     // blank
+        ];
+
+        let mut logits = Vec::new();
+        for row in probability_rows.iter() {
+            for value in row.iter() {
+                logits.push(value.ln());
+            }
+        }
+
+        let logits =
+            Array3::from_shape_vec((1, probability_rows.len(), 4), logits).expect("shape valid");
+
+        let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig {
+            blank_id: 0,
+            fallback_token: None,
+        });
+        let dictionary = dictionary_from_tokens(&["a", "b", "c"]);
+        let sequences = decoder
+            .decode(&logits, &[probability_rows.len()], &dictionary)
+            .expect("decoding should succeed");
+
+        assert_eq!(sequences.len(), 1);
+        let first = &sequences[0];
+        assert_eq!(first.text, "abc");
+
+        let expected = (0.8f32 + 0.85f32 + 0.95f32) / 3.0;
+        let diff = (first.confidence - expected).abs();
+        assert!(
+            diff < 1e-5,
+            "confidence {} differs from expected {}",
+            first.confidence,
+            expected
+        );
     }
 }

@@ -22,5 +22,6 @@ tests/fixtures/models/ppocrv5
 
 .cursorrules
 
+date
 temp/
 sample*.jpg
