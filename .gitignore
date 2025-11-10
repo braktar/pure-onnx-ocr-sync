@@ -16,5 +16,8 @@ target/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-models/ppocrv5/
+tests/fixtures/
+tests/fixtures/images
+tests/fixtures/models/ppocrv5
+
 .cursorrules

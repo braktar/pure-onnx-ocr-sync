@@ -519,6 +519,7 @@ impl OcrEngineBuilder {
         config.det_preprocessor = det_preprocessor_config;
         config.det_unclipper = det_unclipper_config;
         config.rec_batch_size = self.rec_batch_size;
+        config.rec_postprocessor.blank_id = dictionary.len();
 
         Ok(OcrEngine::new(
             det_model_path,
@@ -675,21 +676,48 @@ impl RecognitionPipeline {
 mod tests {
     use super::*;
     use crate::ctc::CtcGreedyDecoderError;
+    use crate::dictionary::RecDictionary;
     use crate::postprocessing::DetPostProcessorError;
     use crate::preprocessing::{DetPreProcessorError, RecPreProcessorError};
     use crate::recognition::RecPostProcessorError;
+    use std::env;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn existing_model_paths() -> Option<(PathBuf, PathBuf, PathBuf)> {
-        let det = Path::new("models/ppocrv5/det.onnx");
-        let rec = Path::new("models/ppocrv5/rec.onnx");
-        let dict = Path::new("models/ppocrv5/ppocrv5_dict.txt");
-        if det.exists() && rec.exists() && dict.exists() {
-            Some((det.to_path_buf(), rec.to_path_buf(), dict.to_path_buf()))
-        } else {
-            None
+    fn locate_ppocrv5_asset(file_name: &str) -> Option<PathBuf> {
+        let mut bases: Vec<PathBuf> = Vec::new();
+        if let Some(dir) = env::var_os("PURE_ONNX_OCR_FIXTURE_DIR") {
+            let env_path = PathBuf::from(dir);
+            bases.push(env_path.clone());
+            bases.push(env_path.join("models"));
         }
+
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        bases.push(manifest.join("tests").join("fixtures").join("models"));
+        bases.push(manifest.join("tests").join("fixtures"));
+        bases.push(manifest.join("models"));
+
+        for base in bases {
+            let ppocr_dir = base.join("ppocrv5");
+            let candidate = ppocr_dir.join(file_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+
+            let alt = base.join(file_name);
+            if alt.exists() {
+                return Some(alt);
+            }
+        }
+
+        None
+    }
+
+    fn existing_model_paths() -> Option<(PathBuf, PathBuf, PathBuf)> {
+        let det = locate_ppocrv5_asset("det.onnx")?;
+        let rec = locate_ppocrv5_asset("rec.onnx")?;
+        let dict = locate_ppocrv5_asset("ppocrv5_dict.txt")?;
+        Some((det, rec, dict))
     }
 
     fn temp_image_path(prefix: &str) -> PathBuf {
@@ -783,6 +811,25 @@ mod tests {
         assert_eq!(engine.rec_model_path(), rec.as_path());
         assert_eq!(engine.dictionary_path(), dict.as_path());
         assert_eq!(engine.rec_batch_size(), 6);
+    }
+
+    #[test]
+    fn recognition_blank_id_matches_dictionary_length() {
+        let (det, rec, dict) = existing_model_paths()
+            .expect("expected PP-OCRv5 assets to be present under models/ppocrv5/");
+
+        let dictionary_len = RecDictionary::from_path(&dict)
+            .expect("dictionary should load successfully")
+            .len();
+
+        let engine = OcrEngineBuilder::new()
+            .det_model_path(&det)
+            .rec_model_path(&rec)
+            .dictionary_path(&dict)
+            .build()
+            .expect("engine should build successfully");
+
+        assert_eq!(engine.config().rec_postprocessor.blank_id, dictionary_len);
     }
 
     #[test]

@@ -79,7 +79,19 @@ impl RecDictionary {
         let mut reverse = HashMap::new();
 
         for (line_number, raw_line) in contents.lines().enumerate() {
-            let token = raw_line.trim();
+            let line = if line_number == 0 {
+                raw_line.trim_start_matches('\u{FEFF}')
+            } else {
+                raw_line
+            };
+
+            let trimmed = line.trim();
+            let token = if trimmed.is_empty() && !line.is_empty() {
+                line
+            } else {
+                trimmed
+            };
+
             if token.is_empty() {
                 continue;
             }
@@ -167,7 +179,7 @@ mod tests {
     #[test]
     fn error_on_empty_dictionary() {
         let path = unique_temp_file("dict_empty");
-        fs::write(&path, "   \n\n\t").unwrap();
+        fs::write(&path, "\n\n\n").unwrap();
 
         let error = RecDictionary::from_path(&path).unwrap_err();
         match error {
@@ -190,6 +202,22 @@ mod tests {
             }
             _ => panic!("expected DuplicateEntry error, got {:?}", error),
         }
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn preserves_leading_space_token() {
+        let path = unique_temp_file("dict_space");
+        // First line is ASCII space, second is fullwidth space, third regular token.
+        fs::write(&path, " \n　\nalpha\n").unwrap();
+
+        let dictionary = RecDictionary::from_path(&path).unwrap();
+
+        assert_eq!(dictionary.len(), 3);
+        assert_eq!(dictionary.token(0), Some(" "));
+        assert_eq!(dictionary.token(1), Some("　"));
+        assert_eq!(dictionary.token(2), Some("alpha"));
 
         fs::remove_file(path).ok();
     }
