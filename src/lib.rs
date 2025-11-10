@@ -25,7 +25,10 @@ pub use ctc::{CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, D
 pub use detection::{DetInferenceOutput, DetInferenceSession};
 pub use dictionary::{DictionaryError, RecDictionary};
 /// High-level façade providing an ergonomic OCR API.
-pub use engine::{OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError, OcrResult};
+pub use engine::{
+    OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError, OcrResult, OcrRunWithMetrics,
+    OcrTimings, StageTimings,
+};
 /// Geometry primitives surfaced at the crate root for convenience.
 pub use geo_types::{Point, Polygon};
 pub use postprocessing::{

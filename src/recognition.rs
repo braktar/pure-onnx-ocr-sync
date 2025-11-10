@@ -260,8 +260,9 @@ mod tests {
     use crate::preprocessing::{RecPreProcessor, RecPreProcessorConfig, RecTextRegion};
     use image::{DynamicImage, ImageBuffer, Rgb};
     use ndarray::Array3;
+    use std::env;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn gradient_image(width: u32, height: u32) -> DynamicImage {
@@ -287,14 +288,39 @@ mod tests {
         dict
     }
 
+    fn locate_ppocrv5_asset(file_name: &str) -> Option<PathBuf> {
+        let mut bases: Vec<PathBuf> = Vec::new();
+        if let Some(dir) = env::var_os("PURE_ONNX_OCR_FIXTURE_DIR") {
+            let env_path = PathBuf::from(dir);
+            bases.push(env_path.clone());
+            bases.push(env_path.join("models"));
+        }
+
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        bases.push(manifest.join("tests").join("fixtures").join("models"));
+        bases.push(manifest.join("tests").join("fixtures"));
+        bases.push(manifest.join("models"));
+
+        for base in bases {
+            let ppocr_dir = base.join("ppocrv5");
+            let candidate = ppocr_dir.join(file_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+
+            let alt = base.join(file_name);
+            if alt.exists() {
+                return Some(alt);
+            }
+        }
+
+        None
+    }
+
     #[test]
     fn recognition_inference_runs() -> TractResult<()> {
-        let model_path = Path::new("models/ppocrv5/rec.onnx");
-        assert!(
-            model_path.exists(),
-            "expected SVTR model at {:?} to exist",
-            model_path
-        );
+        let model_path =
+            locate_ppocrv5_asset("rec.onnx").expect("expected SVTR model under models/ppocrv5/");
 
         let session = RecInferenceSession::load(model_path)?;
 
@@ -325,28 +351,30 @@ mod tests {
     #[test]
     fn post_processor_decodes_with_fallback() {
         let logits = Array3::from_shape_vec(
-            (2, 3, 4),
+            (2, 4, 4),
             vec![
-                3.0, 1.0, -5.0, -6.0, //
-                -6.0, 4.0, -4.0, -7.0, //
-                -7.0, -6.0, -5.0, 3.0, //
+                5.0, 0.1, -1.0, -2.0, //
+                -2.0, 4.5, 0.0, -3.0, //
+                -3.0, 4.2, -0.5, -3.5, //
+                -4.0, -1.0, 4.8, -3.0, //
                 // second sequence with unknown indices
-                -6.0, -5.0, 4.5, -7.0, //
-                -5.0, -4.0, 4.3, -7.0, //
-                -8.0, -7.0, -6.0, 5.0, //
+                -6.0, -5.0, 1.0, 4.5, //
+                5.0, 0.0, -1.0, -2.0, //
+                5.0, 0.0, -1.0, -2.0, //
+                5.0, 0.0, -1.0, -2.0, //
             ],
         )
         .unwrap();
         let output = RecInferenceOutput {
             logits,
-            valid_timesteps: vec![2, 3],
+            valid_timesteps: vec![4, 1],
         };
 
         let dictionary = Arc::new(dictionary_from_tokens(&["a", "b"]));
         let processor = RecPostProcessor::new(
             Arc::clone(&dictionary),
             RecPostProcessorConfig {
-                blank_id: 3,
+                blank_id: 0,
                 fallback_token: "[UNK]".to_string(),
             },
         );

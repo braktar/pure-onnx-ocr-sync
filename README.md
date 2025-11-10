@@ -93,11 +93,27 @@ cargo run --bin ocr_smoke -- path/to/image.jpg \
   --rec-batch-size 8
 ```
 
+ベンチマーク用途では `--benchmark` フラグを付与します。総時間・画像デコード・DBNet / SVTR の各ステージ（前処理・推論・後処理）が `[INFO] benchmark.*` 形式で出力され、既存のテキスト出力と併置されます。
+
+```bash
+cargo run --bin ocr_smoke -- path/to/image.jpg --benchmark
+
+[INFO] benchmark.image=tests/fixtures/images/demo.png
+[INFO] benchmark.total_seconds=0.412583
+[INFO] benchmark.image_decode_seconds=0.003121
+[INFO] benchmark.det.preprocess_seconds=0.044512
+[INFO] benchmark.det.inference_seconds=0.221009
+[INFO] benchmark.det.postprocess_seconds=0.012334
+[INFO] benchmark.rec.preprocess_seconds=0.018775
+[INFO] benchmark.rec.inference_seconds=0.094281
+[INFO] benchmark.rec.postprocess_seconds=0.005237
+```
+
 推論時間、検出されたテキストと信頼度、ポリゴン座標が標準出力に整形されます。入力画像やモデルが見つからない場合はエラーメッセージと共に終了します。
 
 内部では検出前処理が長辺リサイズ後に 32px 単位でゼロパディングを行い、DBNet の入力制約（32 の倍数）を満たすようになっています。
 
-> **現在の制約:** モデルはロードされ推論まで到達しますが、実際の OCR 結果は未だ安定しておらずテキストが崩れます。原因の切り分けとデバッグは今後の課題です。
+> **現在の制約:** `task-fix-001` ブランチで CTC 辞書の blank トークン整合性を是正し、SVTR 出力と辞書のインデックスが一致するようになりました。さらに `task-fix-002` で認識信頼度を「推論結果が確率分布であればその最大値を直接使用し、ロジットの場合は log-sum-exp を通じて Softmax 後の最大確率を算出し算術平均化する」方式へ刷新し、`ocr_smoke` の表示が 0.000 固定から実測レンジ (0.7-0.95 付近) に改善されています。評価用スモークテストの再測定は継続中で、詳細なベンチマークは続報で共有します。
 
 ### よくあるエラー
 
@@ -112,6 +128,9 @@ cargo run --bin ocr_smoke -- path/to/image.jpg \
 | ------------------ | ---------------------------------------------------------------------------------------------- |
 | `OcrEngineBuilder` | モデル・辞書・パラメータを設定し、`OcrEngine` を構築するためのビルダー。                       |
 | `OcrEngine`        | 検出・認識パイプラインを統合したファサード。`run_from_path` と `run_from_image` を提供します。 |
+| `OcrRunWithMetrics`| OCR 実行結果とステージ別メトリクス (`OcrTimings`) をまとめて返すヘルパー構造体。               |
+| `OcrTimings`       | 全体時間・画像デコード時間・DBNet / SVTR の各ステージ時間を集約したメトリクス。                 |
+| `StageTimings`     | 個別ステージ（前処理・推論・後処理）の所要時間を表すユーティリティ。                            |
 | `OcrResult`        | 認識された単一テキスト領域の結果 (`text`, `confidence`, `bounding_box`) を保持します。         |
 | `OcrError`         | ライブラリ全体で発生し得るエラーをカプセル化した列挙型です。                                   |
 | `Polygon`          | `geo-types::Polygon` の再エクスポート。検出結果の座標表現に利用します。                        |
@@ -152,6 +171,9 @@ cargo run --bin ocr_smoke -- path/to/image.jpg \
 - 2025-11-09: 公開APIの Rustdoc コメント (`task-doc-002`) を整備し、`cargo doc` で生成物を確認。
 - 2025-11-09: Cargo メタデータ (`task-doc-003`) を整備し、`cargo package --no-verify` で公開準備を確認。
 - 2025-11-09: 結合テスト (`task-doc-004`) を追加し、フィクスチャ設計と CI 実行手順を文書化。
+- 2025-11-10: `task-fix-001` で `RecDictionary` に blank トークンを追加し、`OcrEngineBuilder` と CTC デコーダーが PaddleOCR の仕様 (`blank_id = 0`) と一致するように修正。
+- 2025-11-10: `task-fix-002` で認識信頼度を「確率出力を検出して最大値を直接集計し、ロジット出力は log-sum-exp で Softmax 後に算術平均化する」方式へ刷新し、`ocr_smoke` の信頼度出力が実測値を反映するよう改善。
+- 2025-11-10: `task-fix-003` で `ocr_smoke` に `--benchmark` 計測フラグと `OcrEngine::run_with_metrics_*` API を追加し、主要ステージの所要時間を取得可能にした。
 
 ## コントリビューション
 
@@ -161,7 +183,7 @@ Pull Request や Issue を歓迎します。大規模な変更を提案する場
 
 - `cargo fmt` と `cargo clippy` でスタイルと静的解析を行ってから PR を作成してください。
 - 追加した機能には可能な限りユニットテストを付与してください。
-- ドキュメント更新の場合は `docs/devlog/ROADMAP.md` と関連タスクの進捗を同期してください。
+- ドキュメント更新の場合は `docs/devlog` と関連タスクの進捗を同期してください。
 
 ## ライセンス
 

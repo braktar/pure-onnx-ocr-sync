@@ -19,6 +19,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tract_onnx::prelude::TractError;
 
 /// Errors that can occur while building or using the OCR engine.
@@ -299,6 +300,48 @@ pub struct OcrResult {
     pub bounding_box: Polygon<f64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct StageTimings {
+    pub preprocess: Duration,
+    pub inference: Duration,
+    pub postprocess: Duration,
+}
+
+impl StageTimings {
+    fn zero() -> Self {
+        Self {
+            preprocess: Duration::ZERO,
+            inference: Duration::ZERO,
+            postprocess: Duration::ZERO,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OcrTimings {
+    pub total: Duration,
+    pub image_decode: Duration,
+    pub detection: StageTimings,
+    pub recognition: StageTimings,
+}
+
+impl OcrTimings {
+    fn new() -> Self {
+        Self {
+            total: Duration::ZERO,
+            image_decode: Duration::ZERO,
+            detection: StageTimings::zero(),
+            recognition: StageTimings::zero(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OcrRunWithMetrics {
+    pub results: Vec<OcrResult>,
+    pub timings: OcrTimings,
+}
+
 impl OcrEngine {
     fn new(
         det_model_path: PathBuf,
@@ -340,12 +383,26 @@ impl OcrEngine {
 
     /// Executes the full OCR pipeline on an image located on disk.
     pub fn run_from_path<P: AsRef<Path>>(&self, path: P) -> Result<Vec<OcrResult>, OcrError> {
+        let run = self.run_with_metrics_from_path(path)?;
+        Ok(run.results)
+    }
+
+    /// Executes the full OCR pipeline on an image located on disk and returns benchmarking data.
+    pub fn run_with_metrics_from_path<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<OcrRunWithMetrics, OcrError> {
+        let overall_start = Instant::now();
         let path_ref = path.as_ref();
+        let decode_start = Instant::now();
         let image = image::open(path_ref).map_err(|source| OcrError::ImageDecode {
             source,
             path: path_ref.to_path_buf(),
         })?;
-        self.run_from_image_impl(&image)
+        let mut run = self.run_with_metrics_from_image_impl(&image)?;
+        run.timings.image_decode = decode_start.elapsed();
+        run.timings.total = overall_start.elapsed();
+        Ok(run)
     }
 
     /// Executes the full OCR pipeline on an image already loaded in memory.
@@ -375,18 +432,42 @@ impl OcrEngine {
     }
 
     pub fn run_from_image(&self, image: &DynamicImage) -> Result<Vec<OcrResult>, OcrError> {
-        self.run_from_image_impl(image)
+        let run = self.run_with_metrics_from_image_impl(image)?;
+        Ok(run.results)
     }
 
-    fn run_from_image_impl(&self, image: &DynamicImage) -> Result<Vec<OcrResult>, OcrError> {
+    pub fn run_with_metrics_from_image(
+        &self,
+        image: &DynamicImage,
+    ) -> Result<OcrRunWithMetrics, OcrError> {
+        self.run_with_metrics_from_image_impl(image)
+    }
+
+    fn run_with_metrics_from_image_impl(
+        &self,
+        image: &DynamicImage,
+    ) -> Result<OcrRunWithMetrics, OcrError> {
+        let pipeline_start = Instant::now();
+        let mut timings = OcrTimings::new();
         let image_dims = image.dimensions();
-        let polygons = self.detection.detect_polygons(image, image_dims)?;
+
+        let (polygons, detection_timings) = self
+            .detection
+            .detect_polygons_with_timings(image, image_dims)?;
+        timings.detection = detection_timings;
+
         if polygons.is_empty() {
-            return Ok(Vec::new());
+            timings.total = pipeline_start.elapsed();
+            return Ok(OcrRunWithMetrics {
+                results: Vec::new(),
+                timings,
+            });
         }
 
         let regions = polygons_to_text_regions(&polygons, image_dims);
-        let sequences = self.recognition.run(image, &regions)?;
+        let (sequences, recognition_timings) =
+            self.recognition.run_with_timings(image, &regions)?;
+        timings.recognition = recognition_timings;
 
         if sequences.len() != polygons.len() {
             return Err(OcrError::PipelineMismatch {
@@ -395,7 +476,7 @@ impl OcrEngine {
             });
         }
 
-        let results = polygons
+        let results: Vec<OcrResult> = polygons
             .into_iter()
             .zip(sequences.into_iter())
             .map(|(polygon, sequence)| OcrResult {
@@ -405,7 +486,9 @@ impl OcrEngine {
             })
             .collect();
 
-        Ok(results)
+        timings.total = pipeline_start.elapsed();
+
+        Ok(OcrRunWithMetrics { results, timings })
     }
 }
 
@@ -519,6 +602,7 @@ impl OcrEngineBuilder {
         config.det_preprocessor = det_preprocessor_config;
         config.det_unclipper = det_unclipper_config;
         config.rec_batch_size = self.rec_batch_size;
+        config.rec_postprocessor.blank_id = dictionary.blank_id();
 
         Ok(OcrEngine::new(
             det_model_path,
@@ -597,30 +681,40 @@ impl DetectionPipeline {
         }
     }
 
-    fn detect_polygons(
+    fn detect_polygons_with_timings(
         &self,
         image: &DynamicImage,
         image_dims: (u32, u32),
-    ) -> Result<Vec<Polygon<f64>>, OcrError> {
+    ) -> Result<(Vec<Polygon<f64>>, StageTimings), OcrError> {
+        let preprocess_start = Instant::now();
         let preprocessed = self.preprocessor.process(image).map_err(OcrError::from)?;
+        let preprocess_elapsed = preprocess_start.elapsed();
 
+        let inference_start = Instant::now();
         let inference = self
             .session
             .run(&preprocessed)
             .map_err(|source| OcrError::DetectionInference { source })?;
+        let inference_elapsed = inference_start.elapsed();
 
+        let post_start = Instant::now();
         let contours = self
             .postprocessor
             .process(&inference)
             .map_err(OcrError::from)?;
-
         let unclipped = self.unclipper.unclip_contours(&contours);
-
         let scaled = self
             .scaler
             .scale_polygons(&unclipped, preprocessed.scale_ratio, image_dims);
+        let post_elapsed = post_start.elapsed();
 
-        Ok(scaled)
+        let timings = StageTimings {
+            preprocess: preprocess_elapsed,
+            inference: inference_elapsed,
+            postprocess: post_elapsed,
+        };
+
+        Ok((scaled, timings))
     }
 }
 
@@ -647,27 +741,39 @@ impl RecognitionPipeline {
         }
     }
 
-    fn run(
+    fn run_with_timings(
         &self,
         image: &DynamicImage,
         regions: &[RecTextRegion],
-    ) -> Result<Vec<DecodedSequence>, OcrError> {
+    ) -> Result<(Vec<DecodedSequence>, StageTimings), OcrError> {
+        let preprocess_start = Instant::now();
         let batch = self
             .preprocessor
             .process(image, regions)
             .map_err(OcrError::from)?;
+        let preprocess_elapsed = preprocess_start.elapsed();
 
+        let inference_start = Instant::now();
         let inference = self
             .session
             .run(&batch)
             .map_err(|source| OcrError::RecognitionInference { source })?;
+        let inference_elapsed = inference_start.elapsed();
 
+        let post_start = Instant::now();
         let sequences = self
             .postprocessor
             .process(&inference)
             .map_err(OcrError::from)?;
+        let post_elapsed = post_start.elapsed();
 
-        Ok(sequences)
+        let timings = StageTimings {
+            preprocess: preprocess_elapsed,
+            inference: inference_elapsed,
+            postprocess: post_elapsed,
+        };
+
+        Ok((sequences, timings))
     }
 }
 
@@ -675,21 +781,48 @@ impl RecognitionPipeline {
 mod tests {
     use super::*;
     use crate::ctc::CtcGreedyDecoderError;
+    use crate::dictionary::RecDictionary;
     use crate::postprocessing::DetPostProcessorError;
     use crate::preprocessing::{DetPreProcessorError, RecPreProcessorError};
     use crate::recognition::RecPostProcessorError;
+    use std::env;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn existing_model_paths() -> Option<(PathBuf, PathBuf, PathBuf)> {
-        let det = Path::new("models/ppocrv5/det.onnx");
-        let rec = Path::new("models/ppocrv5/rec.onnx");
-        let dict = Path::new("models/ppocrv5/ppocrv5_dict.txt");
-        if det.exists() && rec.exists() && dict.exists() {
-            Some((det.to_path_buf(), rec.to_path_buf(), dict.to_path_buf()))
-        } else {
-            None
+    fn locate_ppocrv5_asset(file_name: &str) -> Option<PathBuf> {
+        let mut bases: Vec<PathBuf> = Vec::new();
+        if let Some(dir) = env::var_os("PURE_ONNX_OCR_FIXTURE_DIR") {
+            let env_path = PathBuf::from(dir);
+            bases.push(env_path.clone());
+            bases.push(env_path.join("models"));
         }
+
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        bases.push(manifest.join("tests").join("fixtures").join("models"));
+        bases.push(manifest.join("tests").join("fixtures"));
+        bases.push(manifest.join("models"));
+
+        for base in bases {
+            let ppocr_dir = base.join("ppocrv5");
+            let candidate = ppocr_dir.join(file_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+
+            let alt = base.join(file_name);
+            if alt.exists() {
+                return Some(alt);
+            }
+        }
+
+        None
+    }
+
+    fn existing_model_paths() -> Option<(PathBuf, PathBuf, PathBuf)> {
+        let det = locate_ppocrv5_asset("det.onnx")?;
+        let rec = locate_ppocrv5_asset("rec.onnx")?;
+        let dict = locate_ppocrv5_asset("ppocrv5_dict.txt")?;
+        Some((det, rec, dict))
     }
 
     fn temp_image_path(prefix: &str) -> PathBuf {
@@ -786,6 +919,28 @@ mod tests {
     }
 
     #[test]
+    fn recognition_blank_id_matches_dictionary_blank_id() {
+        let (det, rec, dict) = existing_model_paths()
+            .expect("expected PP-OCRv5 assets to be present under models/ppocrv5/");
+
+        let dictionary_blank_id = RecDictionary::from_path(&dict)
+            .expect("dictionary should load successfully")
+            .blank_id();
+
+        let engine = OcrEngineBuilder::new()
+            .det_model_path(&det)
+            .rec_model_path(&rec)
+            .dictionary_path(&dict)
+            .build()
+            .expect("engine should build successfully");
+
+        assert_eq!(
+            engine.config().rec_postprocessor.blank_id,
+            dictionary_blank_id
+        );
+    }
+
+    #[test]
     fn run_from_path_processes_blank_image() -> Result<(), OcrError> {
         let (det, rec, dict) = existing_model_paths()
             .expect("expected PP-OCRv5 assets to be present under models/ppocrv5/");
@@ -833,6 +988,31 @@ mod tests {
             results.len() <= engine.rec_batch_size(),
             "number of results should not exceed configured batch size"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_with_metrics_reports_timings() -> Result<(), OcrError> {
+        let (det, rec, dict) = existing_model_paths()
+            .expect("expected PP-OCRv5 assets to be present under models/ppocrv5/");
+
+        let engine = OcrEngineBuilder::new()
+            .det_model_path(&det)
+            .rec_model_path(&rec)
+            .dictionary_path(&dict)
+            .build()
+            .expect("engine should build successfully");
+
+        let image_buffer = image::ImageBuffer::from_pixel(16, 16, image::Rgb([0, 0, 0]));
+        let dynamic_image = DynamicImage::ImageRgb8(image_buffer);
+
+        let run_with_metrics = engine.run_with_metrics_from_image(&dynamic_image)?;
+        let baseline_results = engine.run_from_image(&dynamic_image)?;
+
+        assert_eq!(run_with_metrics.results.len(), baseline_results.len());
+        assert!(run_with_metrics.timings.total >= run_with_metrics.timings.detection.preprocess);
+        assert!(run_with_metrics.timings.recognition.preprocess <= run_with_metrics.timings.total);
 
         Ok(())
     }

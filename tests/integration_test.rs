@@ -115,4 +115,3 @@ fn ocr_builder_rejects_missing_models() {
         "builder should return error when models are unavailable"
     );
 }
-
