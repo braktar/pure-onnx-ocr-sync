@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const BLANK_TOKEN: &str = "blank";
+
 /// Errors that can occur while loading or using the recognition dictionary.
 #[derive(Debug)]
 pub enum DictionaryError {
@@ -78,6 +80,10 @@ impl RecDictionary {
         let mut tokens = Vec::new();
         let mut reverse = HashMap::new();
 
+        let blank = BLANK_TOKEN.to_string();
+        reverse.insert(blank.clone(), 0);
+        tokens.push(blank);
+
         for (line_number, raw_line) in contents.lines().enumerate() {
             let line = if line_number == 0 {
                 raw_line.trim_start_matches('\u{FEFF}')
@@ -104,11 +110,13 @@ impl RecDictionary {
                 });
             }
 
-            reverse.insert(token.to_string(), tokens.len());
-            tokens.push(token.to_string());
+            let token_string = token.to_string();
+            let index = tokens.len();
+            reverse.insert(token_string.clone(), index);
+            tokens.push(token_string);
         }
 
-        if tokens.is_empty() {
+        if tokens.len() == 1 {
             return Err(DictionaryError::EmptyDictionary {
                 path: path.to_path_buf(),
             });
@@ -120,6 +128,16 @@ impl RecDictionary {
     /// Returns the number of entries in the dictionary.
     pub fn len(&self) -> usize {
         self.tokens.len()
+    }
+
+    /// Returns the blank token identifier (always 0).
+    pub fn blank_id(&self) -> usize {
+        0
+    }
+
+    /// Returns the blank token string ("blank").
+    pub fn blank_token(&self) -> &str {
+        &self.tokens[0]
     }
 
     /// Returns true if the dictionary has no entries.
@@ -162,15 +180,19 @@ mod tests {
 
         let dictionary = RecDictionary::from_path(&path).unwrap();
 
-        assert_eq!(dictionary.len(), 4);
-        assert_eq!(dictionary.token(0), Some("a"));
-        assert_eq!(dictionary.token(1), Some("b"));
-        assert_eq!(dictionary.token(2), Some("c"));
+        assert_eq!(dictionary.len(), 5);
+        assert_eq!(dictionary.blank_id(), 0);
+        assert_eq!(dictionary.blank_token(), "blank");
+        assert_eq!(dictionary.token(0), Some("blank"));
+        assert_eq!(dictionary.token(1), Some("a"));
+        assert_eq!(dictionary.token(2), Some("b"));
+        assert_eq!(dictionary.token(3), Some("c"));
         assert_eq!(
-            dictionary.token(3),
+            dictionary.token(4),
             Some("# comment-like text should still be taken literally")
         );
-        assert_eq!(dictionary.index_of("c"), Some(2));
+        assert_eq!(dictionary.index_of("blank"), Some(0));
+        assert_eq!(dictionary.index_of("c"), Some(3));
         assert!(dictionary.index_of("missing").is_none());
 
         fs::remove_file(path).ok();
@@ -214,10 +236,26 @@ mod tests {
 
         let dictionary = RecDictionary::from_path(&path).unwrap();
 
-        assert_eq!(dictionary.len(), 3);
-        assert_eq!(dictionary.token(0), Some(" "));
-        assert_eq!(dictionary.token(1), Some("　"));
-        assert_eq!(dictionary.token(2), Some("alpha"));
+        assert_eq!(dictionary.len(), 4);
+        assert_eq!(dictionary.token(0), Some("blank"));
+        assert_eq!(dictionary.token(1), Some(" "));
+        assert_eq!(dictionary.token(2), Some("　"));
+        assert_eq!(dictionary.token(3), Some("alpha"));
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn dictionary_starts_with_blank_token() {
+        let path = unique_temp_file("dict_blank");
+        fs::write(&path, "first\nsecond\n").unwrap();
+
+        let dictionary = RecDictionary::from_path(&path).unwrap();
+
+        assert_eq!(dictionary.blank_id(), 0);
+        assert_eq!(dictionary.token(0), Some("blank"));
+        assert_eq!(dictionary.token(1), Some("first"));
+        assert_eq!(dictionary.token(2), Some("second"));
 
         fs::remove_file(path).ok();
     }

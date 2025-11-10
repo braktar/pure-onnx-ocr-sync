@@ -219,29 +219,30 @@ mod tests {
     #[test]
     fn decodes_sequence_with_duplicates_and_blank() {
         let logits = Array3::from_shape_vec(
-            (1, 4, 3),
+            (1, 5, 3),
             vec![
-                2.0, 0.5, -1.0, //
-                2.5, 0.4, -2.0, //
-                -0.2, -0.3, 3.0, //
-                0.1, 2.2, -0.5, //
+                5.0, 0.1, -0.2, //
+                -3.0, 4.0, 0.2, //
+                -4.0, 3.8, -0.1, //
+                -5.0, -2.0, 4.5, //
+                4.2, -3.0, -2.0, //
             ],
         )
         .unwrap();
 
         let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig {
-            blank_id: 2,
+            blank_id: 0,
             fallback_token: None,
         });
         let dictionary = dictionary_from_tokens(&["a", "b"]);
         let sequences = decoder
-            .decode(&logits, &[4], &dictionary)
+            .decode(&logits, &[5], &dictionary)
             .expect("decoding should succeed");
 
         assert_eq!(sequences.len(), 1);
         let first = &sequences[0];
         assert_eq!(first.text, "ab");
-        assert_eq!(first.token_indices, vec![0, 1]);
+        assert_eq!(first.token_indices, vec![1, 2]);
         assert!(first.confidence > 0.0);
         assert!(first.confidence <= 1.0);
         assert_eq!(first.fallback_count, 0);
@@ -252,15 +253,15 @@ mod tests {
         let logits = Array3::from_shape_vec(
             (1, 3, 2),
             vec![
-                0.1, 1.0, //
-                0.2, 1.1, //
-                0.3, 1.2, //
+                1.0, 0.1, //
+                1.2, 0.0, //
+                1.1, -0.5, //
             ],
         )
         .unwrap();
 
         let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig {
-            blank_id: 1,
+            blank_id: 0,
             fallback_token: None,
         });
         let dictionary = dictionary_from_tokens(&["a"]);
@@ -310,7 +311,7 @@ mod tests {
             blank_id: 0,
             fallback_token: Some("[UNK]".to_string()),
         });
-        let dictionary = dictionary_from_tokens(&["<blank>", "a"]);
+        let dictionary = dictionary_from_tokens(&["a"]);
         let sequences = decoder
             .decode(&logits, &[2], &dictionary)
             .expect("decoder should fallback instead of error");

@@ -519,7 +519,7 @@ impl OcrEngineBuilder {
         config.det_preprocessor = det_preprocessor_config;
         config.det_unclipper = det_unclipper_config;
         config.rec_batch_size = self.rec_batch_size;
-        config.rec_postprocessor.blank_id = dictionary.len();
+        config.rec_postprocessor.blank_id = dictionary.blank_id();
 
         Ok(OcrEngine::new(
             det_model_path,
@@ -814,13 +814,13 @@ mod tests {
     }
 
     #[test]
-    fn recognition_blank_id_matches_dictionary_length() {
+    fn recognition_blank_id_matches_dictionary_blank_id() {
         let (det, rec, dict) = existing_model_paths()
             .expect("expected PP-OCRv5 assets to be present under models/ppocrv5/");
 
-        let dictionary_len = RecDictionary::from_path(&dict)
+        let dictionary_blank_id = RecDictionary::from_path(&dict)
             .expect("dictionary should load successfully")
-            .len();
+            .blank_id();
 
         let engine = OcrEngineBuilder::new()
             .det_model_path(&det)
@@ -829,7 +829,10 @@ mod tests {
             .build()
             .expect("engine should build successfully");
 
-        assert_eq!(engine.config().rec_postprocessor.blank_id, dictionary_len);
+        assert_eq!(
+            engine.config().rec_postprocessor.blank_id,
+            dictionary_blank_id
+        );
     }
 
     #[test]

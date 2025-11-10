@@ -351,28 +351,30 @@ mod tests {
     #[test]
     fn post_processor_decodes_with_fallback() {
         let logits = Array3::from_shape_vec(
-            (2, 3, 4),
+            (2, 4, 4),
             vec![
-                3.0, 1.0, -5.0, -6.0, //
-                -6.0, 4.0, -4.0, -7.0, //
-                -7.0, -6.0, -5.0, 3.0, //
+                5.0, 0.1, -1.0, -2.0, //
+                -2.0, 4.5, 0.0, -3.0, //
+                -3.0, 4.2, -0.5, -3.5, //
+                -4.0, -1.0, 4.8, -3.0, //
                 // second sequence with unknown indices
-                -6.0, -5.0, 4.5, -7.0, //
-                -5.0, -4.0, 4.3, -7.0, //
-                -8.0, -7.0, -6.0, 5.0, //
+                -6.0, -5.0, 1.0, 4.5, //
+                5.0, 0.0, -1.0, -2.0, //
+                5.0, 0.0, -1.0, -2.0, //
+                5.0, 0.0, -1.0, -2.0, //
             ],
         )
         .unwrap();
         let output = RecInferenceOutput {
             logits,
-            valid_timesteps: vec![2, 3],
+            valid_timesteps: vec![4, 1],
         };
 
         let dictionary = Arc::new(dictionary_from_tokens(&["a", "b"]));
         let processor = RecPostProcessor::new(
             Arc::clone(&dictionary),
             RecPostProcessorConfig {
-                blank_id: 3,
+                blank_id: 0,
                 fallback_token: "[UNK]".to_string(),
             },
         );

@@ -21,3 +21,6 @@ tests/fixtures/images
 tests/fixtures/models/ppocrv5
 
 .cursorrules
+
+temp/
+sample*.jpg
