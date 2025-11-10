@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Instant;
 
-use pure_onnx_ocr::{OcrEngineBuilder, OcrError, OcrResult};
+use pure_onnx_ocr::{OcrEngineBuilder, OcrError, OcrResult, OcrRunWithMetrics, StageTimings};
 
 const DEFAULT_DET_MODEL: &str = "models/ppocrv5/det.onnx";
 const DEFAULT_REC_MODEL: &str = "models/ppocrv5/rec.onnx";
@@ -51,16 +51,24 @@ fn run() -> Result<(), RunError> {
         .as_ref()
         .expect("image path should be present when help is not requested");
 
-    let start = Instant::now();
-    let results = engine.run_from_path(image_path).map_err(RunError::from)?;
-    let total_timing = start.elapsed();
+    let (results, total_duration) = if cli.benchmark {
+        let run = engine
+            .run_with_metrics_from_path(image_path)
+            .map_err(RunError::from)?;
+        print_benchmark_report(image_path, &run);
+        (run.results, run.timings.total)
+    } else {
+        let start = Instant::now();
+        let run_results = engine.run_from_path(image_path).map_err(RunError::from)?;
+        (run_results, start.elapsed())
+    };
 
     println!("Input image: {}", image_path.display());
     println!("Detection model: {}", engine.det_model_path().display());
     println!("Recognition model: {}", engine.rec_model_path().display());
     println!("Dictionary: {}", engine.dictionary_path().display());
     println!("Recognition batch size: {}", engine.rec_batch_size());
-    println!("Total time: {:.3} seconds", total_timing.as_secs_f64());
+    println!("Total time: {:.3} seconds", total_duration.as_secs_f64());
 
     if results.is_empty() {
         println!("No text regions detected.");
@@ -107,6 +115,7 @@ struct Cli {
     det_limit_side_len: Option<u32>,
     det_unclip_ratio: Option<f64>,
     rec_batch_size: Option<usize>,
+    benchmark: bool,
     show_help: bool,
 }
 
@@ -127,6 +136,7 @@ impl Cli {
             det_limit_side_len: None,
             det_unclip_ratio: None,
             rec_batch_size: None,
+            benchmark: false,
             show_help: false,
         };
 
@@ -182,6 +192,9 @@ impl Cli {
                     }
                     cli.rec_batch_size = Some(parsed);
                 }
+                "--benchmark" => {
+                    cli.benchmark = true;
+                }
                 other if other.starts_with('-') => {
                     return Err(RunError::cli(format!("unknown option `{}`", other)));
                 }
@@ -231,6 +244,7 @@ impl Cli {
         );
         text.push_str("      --det-unclip-ratio R      Override detection polygon unclip ratio\n");
         text.push_str("      --rec-batch-size N        Override recognition batch size (> 0)\n");
+        text.push_str("      --benchmark               Emit timing diagnostics for benchmarking\n");
         text
     }
 }
@@ -279,4 +293,25 @@ impl std::error::Error for RunError {
             RunError::Ocr(_) => None,
         }
     }
+}
+
+fn print_benchmark_report(image_path: &PathBuf, run: &OcrRunWithMetrics) {
+    println!("[INFO] benchmark.image={}", image_path.display());
+    print_timing_line("benchmark.total_seconds", run.timings.total);
+    print_timing_line("benchmark.image_decode_seconds", run.timings.image_decode);
+    print_stage_timings("benchmark.det", &run.timings.detection);
+    print_stage_timings("benchmark.rec", &run.timings.recognition);
+}
+
+fn print_timing_line(label: &str, duration: std::time::Duration) {
+    println!("[INFO] {}={:.6}", label, duration.as_secs_f64());
+}
+
+fn print_stage_timings(prefix: &str, stage: &StageTimings) {
+    print_timing_line(&format!("{}.preprocess_seconds", prefix), stage.preprocess);
+    print_timing_line(&format!("{}.inference_seconds", prefix), stage.inference);
+    print_timing_line(
+        &format!("{}.postprocess_seconds", prefix),
+        stage.postprocess,
+    );
 }
