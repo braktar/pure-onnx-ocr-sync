@@ -1,89 +1,76 @@
-# `pure-onnx-ocr` (Pure Rust OnnxOCR)
+# `pure-onnx-ocr`
 
-作成者: Shion Watanabe  
-日付: 2025-11-09  
-リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
+Author: Shion Watanabe  
+Date: 2025-11-09  
+Repository: http://github.com/siska-tech/pure-onnx-ocr
 
-Pure RustでOCRパイプラインを構築するためのライブラリです。Baidu PaddleOCR由来の `det.onnx` (DBNet) と `rec.onnx` (SVTR_HGNet) を Pure Rust エコシステムのみで実行できるよう再設計しています。
+Pure Rust OCR pipeline that re-implements the PaddleOCR (DBNet + SVTR\_HGNet) models without relying on C/C++ runtimes. The crate provides a high-level `OcrEngine` facade that hides detection and recognition stages behind a builder-style configuration API.
 
-> **English documentation is available in `README_en.md`.**  
-> Other architectural documents also provide English counterparts (see [Documentation](#documentation)).
+## Highlights
 
-## 特長
+- **Pure Rust runtime** – no native shared libraries or FFI bindings; `cargo build` is enough.
+- **DBNet + SVTR pipeline** – mirrors the official PaddleOCR ONNX export while staying within the Rust ecosystem.
+- **Extensible architecture** – detection, recognition, and geometry utilities are separated so you can swap or extend individual stages.
+- **Portable** – designed to run in environments where shipping C++ runtimes is difficult (embedded, serverless, WASM).
 
-- **Pure Rustのみで完結**: C/C++製オンプレミスライブラリやFFIの導入が不要です。`cargo build` だけでセットアップできます。
-- **DBNet + SVTR パイプライン**: PaddleOCRが採用する検出・認識モデルをRust上で再現します。
-- **モジュール構成が明確**: `OcrEngineBuilder` と `OcrEngine` を中心に、前処理・推論・後処理を分離しています。
-- **移植性**: 組み込み環境、サーバーレス、WASMなど、C++依存が課題となる環境でも動作を想定しています。
+## Prerequisites
 
-## 導入手順
+- Rust 1.75 or newer (stable channel)
+- CPU inference on x86\_64 or aarch64
+- ONNX models (`det.onnx`, `rec.onnx`) and the PaddleOCR dictionary (`ppocrv5_dict.txt`)
 
-### 1. 前提条件
-
-- Rust 1.75 以降 (stable)
-- CPU推論を想定した x86\_64 / aarch64 環境
-- ONNXモデルファイル (`det.onnx`, `rec.onnx`) と辞書ファイル (`ppocrv5_dict.txt`)
-
-### 2. 依存関係の追加
-
-`Cargo.toml` の `[dependencies]` に以下を追加してください。
+## Installation
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.1.0"         # crates.io リリース後に最新バージョンへ更新してください
-image = "0.25"                  # OCR結果の描画や前処理に利用する場合
-geo-types = "0.7"               # ポリゴン座標の操作に利用する場合
+pure_onnx_ocr = "0.1.0"
+image = "0.25"       # recommended for image I/O
+geo-types = "0.7"    # recommended for working with polygon results
 ```
 
-### 3. モデルと辞書の配置
+Download the `PP-OCRv5_Server-ONNX` (or Mobile) bundle from PaddleOCR. Place the files under `models/ppocrv5/` (or any path of your choice) and pass the paths into the builder.
 
-1. PaddleOCR配布の `PP-OCRv5_Server-ONNX` もしくは `PP-OCRv5_Mobile-ONNX` をダウンロードします。
-2. 本プロジェクトの `models/` ディレクトリなど、任意の場所に以下のファイルを配置してください。
-   - `models/ppocrv5/det.onnx`
-   - `models/ppocrv5/rec.onnx`
-   - `models/ppocrv5/ppocrv5_dict.txt`
-3. `OcrEngineBuilder` へ上記パスを渡すことで推論が可能になります。
-
-## クイックスタート
+## Quick Start
 
 ```rust
-use pure_onnx_ocr::{OcrEngineBuilder, OcrError, OcrResult};
+use pure_onnx_ocr::{OcrEngineBuilder, OcrResult};
 
-fn main() -> Result<(), OcrError> {
-    // 1. エンジンの初期化（アプリケーション起動時に一度だけ実行）
+fn main() -> Result<(), pure_onnx_ocr::OcrError> {
     let engine = OcrEngineBuilder::new()
         .det_model_path("models/ppocrv5/det.onnx")
         .rec_model_path("models/ppocrv5/rec.onnx")
         .dictionary_path("models/ppocrv5/ppocrv5_dict.txt")
-        .det_limit_side_len(960)   // 任意調整: 入力画像の最大長辺
-        .det_unclip_ratio(1.5)     // 任意調整: 検出ポリゴンのオフセット率
-        .rec_batch_size(8)         // 任意調整: 認識推論のバッチサイズ
+        .det_limit_side_len(960)
+        .det_unclip_ratio(1.5)
+        .rec_batch_size(8)
         .build()?;
 
-    // 2. 画像ファイルからOCRを実行
     let results: Vec<OcrResult> = engine.run_from_path("examples/demo.jpg")?;
-
-    // 3. OCR結果を活用
     for (idx, result) in results.iter().enumerate() {
-        println!("#{} text={} confidence={:.4}", idx, result.text, result.confidence);
-        println!("   polygon={:?}", result.bounding_box.exterior().points());
+        println!(
+            "#{} text={} confidence={:.4} polygon={:?}",
+            idx,
+            result.text,
+            result.confidence,
+            result.bounding_box.exterior().points()
+        );
     }
 
     Ok(())
 }
 ```
 
-## 動作確認バイナリ `ocr_smoke`
+## Smoke Testing with `ocr_smoke`
 
-`test_ocr.py` に相当する動作確認を Rust のみで実施したい場合は、付属の `ocr_smoke` バイナリを利用できます。
+If you want to replicate the behaviour of the original `test_ocr.py` without leaving the Rust ecosystem, you can use the bundled `ocr_smoke` binary.
 
-- 既定で `models/ppocrv5` 配下の `det.onnx`, `rec.onnx`, `ppocrv5_dict.txt` を参照します。
-- 使い方:
+- By default it points to `models/ppocrv5/det.onnx`, `models/ppocrv5/rec.onnx`, and `models/ppocrv5/ppocrv5_dict.txt`.
+- Example usage:
 
 ```bash
 cargo run --bin ocr_smoke -- path/to/image.jpg
 
-# モデルや設定を上書きする例
+# Override model paths and runtime options
 cargo run --bin ocr_smoke -- path/to/image.jpg \
   --det-model models/ppocrv5/det.onnx \
   --rec-model models/ppocrv5/rec.onnx \
@@ -93,103 +80,74 @@ cargo run --bin ocr_smoke -- path/to/image.jpg \
   --rec-batch-size 8
 ```
 
-ベンチマーク用途では `--benchmark` フラグを付与します。総時間・画像デコード・DBNet / SVTR の各ステージ（前処理・推論・後処理）が `[INFO] benchmark.*` 形式で出力され、既存のテキスト出力と併置されます。
+The CLI prints inference timing, recognised texts with confidences, and polygon coordinates. It exits with a descriptive error when the image or models are missing.
 
-```bash
-cargo run --bin ocr_smoke -- path/to/image.jpg --benchmark
+Internally, the detection pre-processing stage now zero-pads resized tensors so their height/width are multiples of 32, matching DBNet’s input requirements.
 
-[INFO] benchmark.image=tests/fixtures/images/demo.png
-[INFO] benchmark.total_seconds=0.412583
-[INFO] benchmark.image_decode_seconds=0.003121
-[INFO] benchmark.det.preprocess_seconds=0.044512
-[INFO] benchmark.det.inference_seconds=0.221009
-[INFO] benchmark.det.postprocess_seconds=0.012334
-[INFO] benchmark.rec.preprocess_seconds=0.018775
-[INFO] benchmark.rec.inference_seconds=0.094281
-[INFO] benchmark.rec.postprocess_seconds=0.005237
-```
+> **Current limitation:** Although the pipeline loads and runs, the OCR results are still noisy and often incorrect. Root-cause analysis and debugging remain open tasks.
 
-推論時間、検出されたテキストと信頼度、ポリゴン座標が標準出力に整形されます。入力画像やモデルが見つからない場合はエラーメッセージと共に終了します。
+### Troubleshooting
 
-内部では検出前処理が長辺リサイズ後に 32px 単位でゼロパディングを行い、DBNet の入力制約（32 の倍数）を満たすようになっています。
+- `ModelLoad`: `tract` rejected an operator that the ONNX graph requires (e.g., `LayerNormalization`, `Scan`). Try a simplified model or file an issue with model details.
+- `Dictionary`: ensure the dictionary file is encoded in UTF-8 without BOM.
 
-> **現在の制約:** `task-fix-001` ブランチで CTC 辞書の blank トークン整合性を是正し、SVTR 出力と辞書のインデックスが一致するようになりました。さらに `task-fix-002` で認識信頼度を「推論結果が確率分布であればその最大値を直接使用し、ロジットの場合は log-sum-exp を通じて Softmax 後の最大確率を算出し算術平均化する」方式へ刷新し、`ocr_smoke` の表示が 0.000 固定から実測レンジ (0.7-0.95 付近) に改善されています。評価用スモークテストの再測定は継続中で、詳細なベンチマークは続報で共有します。
+## API Overview
 
-### よくあるエラー
+| Symbol             | Description                                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `OcrEngineBuilder` | Configures model paths and runtime parameters. Produces an `OcrEngine`.                                       |
+| `OcrEngine`        | Facade that executes detection + recognition. Provides `run_from_path` and `run_from_image`.                  |
+| `OcrResult`        | Holds the text, confidence score, and `Polygon` bounding box for a single region.                             |
+| `OcrError`         | Enumerates all errors emitted by the library (I/O, model loading, preprocessing, inference, post-processing). |
+| `Polygon`          | Re-export of `geo-types::Polygon`. Useful for downstream geometry processing.                                 |
 
-- `ModelLoad`: `tract` が未対応のONNXオペレータ（例: `LayerNormalization`, `Scan`）を検出した場合に発生します。
-- `Dictionary`: 辞書ファイルの文字コードがUTF-8以外の場合に発生します。UTF-8 (BOM無し) で保存してください。
+For detailed behavior and error semantics, see `docs/interface_design_en.md`.
 
-## API概要
+## Documentation Set
 
-`pure_onnx_ocr` クレートは次の構造体・列挙型を公開します。
+- Architecture: `docs/architecture_en.md`
+- Detailed design: `docs/detail_design_en.md`
+- Interface design: `docs/interface_design_en.md`
+- Requirements: `docs/requirements_en.md`
+- References: `docs/references_en.md`
+- Test specification: `docs/test_specification_en.md`
 
-| シンボル           | 概要                                                                                           |
-| ------------------ | ---------------------------------------------------------------------------------------------- |
-| `OcrEngineBuilder` | モデル・辞書・パラメータを設定し、`OcrEngine` を構築するためのビルダー。                       |
-| `OcrEngine`        | 検出・認識パイプラインを統合したファサード。`run_from_path` と `run_from_image` を提供します。 |
-| `OcrRunWithMetrics`| OCR 実行結果とステージ別メトリクス (`OcrTimings`) をまとめて返すヘルパー構造体。               |
-| `OcrTimings`       | 全体時間・画像デコード時間・DBNet / SVTR の各ステージ時間を集約したメトリクス。                 |
-| `StageTimings`     | 個別ステージ（前処理・推論・後処理）の所要時間を表すユーティリティ。                            |
-| `OcrResult`        | 認識された単一テキスト領域の結果 (`text`, `confidence`, `bounding_box`) を保持します。         |
-| `OcrError`         | ライブラリ全体で発生し得るエラーをカプセル化した列挙型です。                                   |
-| `Polygon`          | `geo-types::Polygon` の再エクスポート。検出結果の座標表現に利用します。                        |
+Each English document mirrors the Japanese source to help international contributors understand the project.
 
-詳細なAPI仕様については `docs/interface_design.md` および `docs/interface_design_en.md` を参照してください。
+## Project Status
 
-## Documentation
+- 2025-11-09: Completed PoC for `det.onnx` (DBNet) loading via `tract-onnx`.
+- 2025-11-09: Validated `rec.onnx` (SVTR\_HGNet) dummy inference; confirmed output shape `[1, 40, 18385]`.
+- 2025-11-09: Implemented detection preprocessing (`DetPreProcessor`) with resizing, normalization, and NCHW transforms.
+- 2025-11-09: Implemented detection inference session with runnable caching per input resolution.
+- 2025-11-09: Implemented detection post-processing (contour extraction and filtering).
+- 2025-11-09: Implemented polygon unclipping via `i_overlay` buffering.
+- 2025-11-09: Implemented polygon scaling back to original coordinates.
+- 2025-11-09: Implemented recognition preprocessing with cropping, force resize, normalization, and batching.
+- 2025-11-09: Implemented recognition inference session with batch execution.
+- 2025-11-09: Implemented dictionary loader with dedupe and bidirectional mapping.
+- 2025-11-09: Implemented Pure Rust CTC greedy decoder with duplicate suppression and blank removal.
+- 2025-11-09: Implemented recognition post-processor that combines logits, CTC decoding, and dictionary lookup.
+- 2025-11-09: Implemented `OcrEngineBuilder`, `OcrEngine`, and public error surface.
+- 2025-11-09: Refreshed README and added bilingual documentation set (`task-doc-001`).
+- 2025-11-09: Enhanced public Rustdoc coverage (`task-doc-002`) and validated `cargo doc` output.
+- 2025-11-09: Completed Cargo metadata (`task-doc-003`) and `cargo package --no-verify` validation.
+- 2025-11-09: Added integration tests (`task-doc-004`) with fixture strategy and CI guidance.
 
-- `docs/architecture.md` / `docs/architecture_en.md`
-- `docs/detail_design.md` / `docs/detail_design_en.md`
-- `docs/interface_design.md` / `docs/interface_design_en.md`
-- `docs/requirements.md` / `docs/requirements_en.md`
-- `docs/references.md` / `docs/references_en.md`
-- `docs/test_specification.md` / `docs/test_specification_en.md`
+## Contributing
 
-ドキュメントセット全体の英語版を整備し、国際的なコントリビューターでも参照可能な構成としています。
+Issues and pull requests are welcome. Please:
 
-## 開発進捗
+- Run `cargo fmt` and `cargo clippy` before submitting patches.
+- Add unit tests where possible.
+- Update the corresponding task file in `docs/devlog/` when documentation or feature work progresses.
 
-- 2025-11-09: `tract-onnx` を用いた `det.onnx` (DBNet) のロードとダミー推論 PoC (`task-poc-001`) を完了。
-- 2025-11-09: `rec.onnx` (SVTR_HGNet) のロードとダミー推論 PoC (`task-poc-002`) を完了。出力形状 `[1, 40, 18385]` を確認。
-- 2025-11-09: 検出前処理 `DetPreProcessor` (`task-det-001`) を実装。長辺制限リサイズ、正規化、NCHW変換に対応。
-- 2025-11-09: DBNet 推論モジュール `DetInferenceSession` (`task-det-002`) を実装。解像度別にランナブルをキャッシュ。
-- 2025-11-09: 検出後処理 `DetPostProcessor` (`task-det-003`) を実装。閾値処理と輪郭抽出を追加。
-- 2025-11-09: ポリゴン拡張 `DetPolygonUnclipper` (`task-det-004`) を実装。`i_overlay` を利用したバッファリングを実現。
-- 2025-11-09: 座標復元 `DetPolygonScaler` (`task-det-005`) を実装。逆スケーリングと丸め処理を追加。
-- 2025-11-09: 認識前処理 `RecPreProcessor` (`task-rec-001`) を実装。クロップ、強制リサイズ、バッチ化を統合。
-- 2025-11-09: 認識推論 `RecInferenceSession` (`task-rec-002`) を実装。`tract-onnx` によるバッチ推論を整備。
-- 2025-11-09: 辞書ローダー `RecDictionary` (`task-rec-003`) を実装。重複検知やマッピングを追加。
-- 2025-11-09: CTC Greedy デコーダー `CtcGreedyDecoder` (`task-rec-004`) を実装。重複圧縮とブランク除去をサポート。
-- 2025-11-09: 認識ポストプロセッサ `RecPostProcessor` (`task-rec-005`) を実装。ロジット処理と辞書マッピングを統合。
-- 2025-11-09: 公開ビルダー `OcrEngineBuilder` (`task-api-001`) を実装。パラメータ検証とモデル初期化を実装。
-- 2025-11-09: `OcrEngine` ファサード (`task-api-002`) を実装。検出・認識パイプラインを統合。
-- 2025-11-09: `OcrEngine::run_from_path` (`task-api-003`) を実装し、E2E OCR処理を完成。
-- 2025-11-09: `OcrEngine::run_from_image` (`task-api-004`) を実装し、メモリ上の画像入力に対応。
-- 2025-11-09: 公開エラー型 `OcrError` (`task-api-005`) を整備し、エラーパスを統一。
-- 2025-11-09: ドキュメント整備タスク `task-doc-001` を完了。READMEの再構成と英語版ドキュメントを追加。
-- 2025-11-09: 公開APIの Rustdoc コメント (`task-doc-002`) を整備し、`cargo doc` で生成物を確認。
-- 2025-11-09: Cargo メタデータ (`task-doc-003`) を整備し、`cargo package --no-verify` で公開準備を確認。
-- 2025-11-09: 結合テスト (`task-doc-004`) を追加し、フィクスチャ設計と CI 実行手順を文書化。
-- 2025-11-10: `task-fix-001` で `RecDictionary` に blank トークンを追加し、`OcrEngineBuilder` と CTC デコーダーが PaddleOCR の仕様 (`blank_id = 0`) と一致するように修正。
-- 2025-11-10: `task-fix-002` で認識信頼度を「確率出力を検出して最大値を直接集計し、ロジット出力は log-sum-exp で Softmax 後に算術平均化する」方式へ刷新し、`ocr_smoke` の信頼度出力が実測値を反映するよう改善。
-- 2025-11-10: `task-fix-003` で `ocr_smoke` に `--benchmark` 計測フラグと `OcrEngine::run_with_metrics_*` API を追加し、主要ステージの所要時間を取得可能にした。
+## License
 
-## コントリビューション
+Licensed under `Apache-2.0`, aligning with PaddleOCR, OnnxOCR, and tract licensing.
 
-Pull Request や Issue を歓迎します。大規模な変更を提案する場合は、まず Issue で背景と目的を共有してください。
+## Testing
 
-### 開発フローの指針
+- Unit tests: `cargo test`
+- Integration tests: provide PP-OCRv5 models and a demo image via the `PURE_ONNX_OCR_FIXTURE_DIR` environment variable or `tests/fixtures/`. See `tests/fixtures/README.md` for the expected directory structure. Tests skip automatically when fixtures are missing.
 
-- `cargo fmt` と `cargo clippy` でスタイルと静的解析を行ってから PR を作成してください。
-- 追加した機能には可能な限りユニットテストを付与してください。
-- ドキュメント更新の場合は `docs/devlog` と関連タスクの進捗を同期してください。
-
-## ライセンス
-
-本プロジェクトは `Apache-2.0` ライセンスで提供します。リファレンス実装である `PaddleOCR`, `OnnxOCR`, `tract` と同一ファミリーのライセンス体系に準拠します。
-
-## テスト
-
-- ユニットテスト: `cargo test`
-- 結合テスト: PP-OCRv5 モデルとテスト画像を `PURE_ONNX_OCR_FIXTURE_DIR` または `tests/fixtures/` に配置してください。フィクスチャが見つからない場合、テストは自動的にスキップされます。必要なパス構成は `tests/fixtures/README.md` を参照してください。

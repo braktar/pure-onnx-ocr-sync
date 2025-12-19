@@ -2,8 +2,9 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+use i_overlay::build;
 use once_cell::sync::Lazy;
-use pure_onnx_ocr::{OcrEngine, OcrEngineBuilder, OcrError};
+use pure_onnx_ocr_sync::{OcrEngine, OcrEngineBuilder, OcrError};
 
 #[derive(Debug)]
 struct FixturePaths {

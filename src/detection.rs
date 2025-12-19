@@ -1,7 +1,6 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::preprocessing::PreprocessedDetInput;
 use ndarray::{Array2, Axis};
@@ -18,7 +17,7 @@ pub struct DetInferenceOutput {
 #[derive(Debug)]
 pub struct DetInferenceSession {
     base_model: InferenceModel,
-    cache: RefCell<HashMap<(u32, u32), Arc<TypedRunnableModel<TypedModel>>>>,
+    cache: RwLock<HashMap<(u32, u32), Arc<TypedRunnableModel<TypedModel>>>>,
 }
 
 impl DetInferenceSession {
@@ -43,7 +42,7 @@ impl DetInferenceSession {
         println!("[DetInfer] Detection model prepared");
         Ok(Self {
             base_model: inference_model,
-            cache: RefCell::new(HashMap::new()),
+            cache: RwLock::new(HashMap::new()),
         })
     }
 
@@ -82,9 +81,11 @@ impl DetInferenceSession {
         width: u32,
         height: u32,
     ) -> TractResult<Arc<TypedRunnableModel<TypedModel>>> {
-        if let Some(plan) = self.cache.borrow().get(&(width, height)) {
-            return Ok(Arc::clone(plan));
-        }
+        if let Ok(cache) = self.cache.read() {
+            if let Some(plan) = cache.get(&(width, height)) {
+                return Ok(Arc::clone(plan));
+            }
+        };
 
         println!(
             "[DetInfer] Preparing runnable model for dims ({}, {})",
@@ -112,9 +113,9 @@ impl DetInferenceSession {
             .into_runnable()?;
 
         let plan = Arc::new(plan);
-        self.cache
-            .borrow_mut()
-            .insert((width, height), Arc::clone(&plan));
+        if let Ok(mut cache) = self.cache.write() {
+            cache.insert((width, height), Arc::clone(&plan));
+        };
 
         Ok(plan)
     }

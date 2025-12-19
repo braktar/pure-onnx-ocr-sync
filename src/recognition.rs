@@ -4,10 +4,9 @@ use crate::ctc::{
 use crate::dictionary::RecDictionary;
 use crate::preprocessing::PreprocessedRecBatch;
 use ndarray::Array3;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tract_onnx::prelude::*;
 use tract_onnx::tract_core::anyhow::anyhow;
 
@@ -22,7 +21,7 @@ pub struct RecInferenceOutput {
 #[derive(Debug)]
 pub struct RecInferenceSession {
     base_model: InferenceModel,
-    cache: RefCell<HashMap<(usize, u32), Arc<TypedRunnableModel<TypedModel>>>>,
+    cache: RwLock<HashMap<(usize, u32), Arc<TypedRunnableModel<TypedModel>>>>,
 }
 
 impl RecInferenceSession {
@@ -47,7 +46,7 @@ impl RecInferenceSession {
         println!("[RecInfer] Recognition model prepared");
         Ok(Self {
             base_model: inference_model,
-            cache: RefCell::new(HashMap::new()),
+            cache: RwLock::new(HashMap::new()),
         })
     }
 
@@ -142,9 +141,11 @@ impl RecInferenceSession {
         batch_size: usize,
         width: u32,
     ) -> TractResult<Arc<TypedRunnableModel<TypedModel>>> {
-        if let Some(plan) = self.cache.borrow().get(&(batch_size, width)) {
-            return Ok(Arc::clone(plan));
-        }
+        if let Ok(cache) = self.cache.read() {
+            if let Some(plan) = cache.get(&(batch_size, width)) {
+                return Ok(Arc::clone(plan));
+            }
+        };
 
         println!(
             "[RecInfer] Preparing runnable model for batch {} width {}",
@@ -172,9 +173,9 @@ impl RecInferenceSession {
             .into_runnable()?;
 
         let plan = Arc::new(plan);
-        self.cache
-            .borrow_mut()
-            .insert((batch_size, width), Arc::clone(&plan));
+        if let Ok(mut cache) = self.cache.write() {
+            cache.insert((batch_size, width), Arc::clone(&plan));
+        };
 
         Ok(plan)
     }

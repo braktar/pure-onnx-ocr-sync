@@ -1228,7 +1228,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pure-onnx-ocr"
+name = "pure-onnx-ocr-sync"
 version = "0.1.0"
 dependencies = [
  "geo-types",
