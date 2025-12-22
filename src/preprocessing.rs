@@ -296,8 +296,12 @@ impl RecPreProcessor {
                 });
             }
 
-            let cropped = image.crop_imm(region.x, region.y, region.width, region.height);
-            let aspect_ratio = region.width as f32 / region.height as f32;
+            let mut cropped = image.crop_imm(region.x, region.y, region.width, region.height);
+            // TODO if region.height:region.width> 1.5 rotate 90 degrees
+            if region.height as f32 / region.width as f32 > 1.5 {
+                cropped = cropped.rotate90();
+            }
+            let aspect_ratio = cropped.width() as f32 / cropped.height() as f32;
             let mut target_width = (aspect_ratio * target_height as f32)
                 .round()
                 .clamp(1.0, max_width as f32) as u32;
