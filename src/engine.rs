@@ -12,6 +12,7 @@ use crate::preprocessing::{
 use crate::recognition::{
     RecInferenceSession, RecPostProcessor, RecPostProcessorConfig, RecPostProcessorError,
 };
+use crate::text_line_ori::TextLineClsInferenceSession;
 use geo_types::Polygon;
 use image::{DynamicImage, GenericImageView, ImageError};
 use std::error::Error;
@@ -289,6 +290,7 @@ pub struct OcrEngine {
     assets: EngineAssets,
     detection: DetectionPipeline,
     recognition: RecognitionPipeline,
+    text_line_ori: Arc<TextLineClsInferenceSession>,
     config: OcrEngineConfig,
 }
 
@@ -346,16 +348,20 @@ impl OcrEngine {
     fn new(
         det_model_path: PathBuf,
         rec_model_path: PathBuf,
+        text_line_ori_model_path: PathBuf,
+        doc_ori_model_path: PathBuf,
         dictionary_path: PathBuf,
         det_session: DetInferenceSession,
         rec_session: RecInferenceSession,
+        text_line_ori_session: TextLineClsInferenceSession,
         dictionary: RecDictionary,
         config: OcrEngineConfig,
     ) -> Self {
-        let assets = EngineAssets::new(det_model_path, rec_model_path, dictionary_path);
+        let assets = EngineAssets::new(det_model_path, rec_model_path, text_line_ori_model_path,  doc_ori_model_path, dictionary_path);
 
         let det_session = Arc::new(det_session);
         let rec_session = Arc::new(rec_session);
+        let text_line_ori: Arc<TextLineClsInferenceSession> = Arc::new(text_line_ori_session);
         let dictionary = Arc::new(dictionary);
 
         let detection = DetectionPipeline::new(
@@ -377,6 +383,7 @@ impl OcrEngine {
             assets,
             detection,
             recognition,
+            text_line_ori,
             config,
         }
     }
@@ -421,6 +428,16 @@ impl OcrEngine {
         self.assets.rec_model_path()
     }
 
+        /// Returns the path used for the detection model.
+    pub fn text_line_ori_model_path(&self) -> &Path {
+        self.assets.text_line_ori_model_path()
+    }
+
+    /// Returns the path used for the recognition model.
+    pub fn doc_ori_model_path(&self) -> &Path {
+        self.assets.doc_ori_model_path()
+    }
+
     /// Returns the path used for the recognition dictionary.
     pub fn dictionary_path(&self) -> &Path {
         self.assets.dictionary_path()
@@ -451,6 +468,8 @@ impl OcrEngine {
         let mut timings = OcrTimings::new();
         let image_dims = image.dimensions();
 
+        // FIXME 新增文档方向矫正
+
         let (polygons, detection_timings) = self
             .detection
             .detect_polygons_with_timings(image, image_dims)?;
@@ -465,6 +484,9 @@ impl OcrEngine {
         }
 
         let regions = polygons_to_text_regions(&polygons, image_dims);
+
+        //  修改输入输出，允许对单行文本进行旋转
+
         let (sequences, recognition_timings) =
             self.recognition.run_with_timings(image, &regions)?;
         timings.recognition = recognition_timings;
@@ -497,6 +519,8 @@ impl OcrEngine {
 pub struct OcrEngineBuilder {
     det_model_path: Option<PathBuf>,
     rec_model_path: Option<PathBuf>,
+    text_line_ori_model_path: Option<PathBuf>,
+    doc_ori_model_path: Option<PathBuf>,
     dictionary_path: Option<PathBuf>,
     det_limit_side_len: u32,
     det_unclip_ratio: f32,
@@ -508,6 +532,8 @@ impl Default for OcrEngineBuilder {
         Self {
             det_model_path: None,
             rec_model_path: None,
+            text_line_ori_model_path: None,
+            doc_ori_model_path: None,
             dictionary_path: None,
             det_limit_side_len: DetPreProcessorConfig::default().limit_side_len,
             det_unclip_ratio: DetPolygonUnclipperConfig::default().unclip_ratio,
@@ -534,6 +560,17 @@ impl OcrEngineBuilder {
         self
     }
 
+    /// Sets the path to the DBNet detection ONNX model.
+    pub fn text_line_ori_model_path<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.text_line_ori_model_path = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Sets the path to the DBNet detection ONNX model.
+    pub fn doc_ori_model_path<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.doc_ori_model_path = Some(path.as_ref().to_path_buf());
+        self
+    }
     /// Sets the path to the recognition dictionary file.
     pub fn dictionary_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.dictionary_path = Some(path.as_ref().to_path_buf());
@@ -566,6 +603,15 @@ impl OcrEngineBuilder {
         let rec_model_path = self.rec_model_path.ok_or(OcrError::MissingField {
             field: "rec_model_path",
         })?;
+
+        let text_line_ori_model_path = self.text_line_ori_model_path.ok_or(OcrError::MissingField {
+            field: "text_line_ori_model_path",
+        })?;
+
+        let doc_ori_model_path = self.doc_ori_model_path.ok_or(OcrError::MissingField {
+            field: "doc_ori_model_path",
+        })?;
+
         let dictionary_path = self.dictionary_path.ok_or(OcrError::MissingField {
             field: "dictionary_path",
         })?;
@@ -578,6 +624,8 @@ impl OcrEngineBuilder {
 
         verify_file_exists(&det_model_path)?;
         verify_file_exists(&rec_model_path)?;
+        verify_file_exists(&text_line_ori_model_path)?;
+        verify_file_exists(&doc_ori_model_path)?;
         verify_file_exists(&dictionary_path)?;
 
         let det_session =
@@ -590,6 +638,17 @@ impl OcrEngineBuilder {
                 source,
                 path: rec_model_path.clone(),
             })?;
+        let text_line_ori_session =
+            TextLineClsInferenceSession::load(&text_line_ori_model_path).map_err(|source| OcrError::ModelLoad {
+                source,
+                path: text_line_ori_model_path.clone(),
+            })?; 
+        // TODO add doc ori model
+        // let text_line_ori_session =
+        //     TextLineClsInferenceSession::load(&text_line_ori_model_path).map_err(|source| OcrError::ModelLoad {
+        //         source,
+        //         path: text_line_ori_model_path.clone(),
+        //     })?; 
         let dictionary = RecDictionary::from_path(&dictionary_path)?;
 
         let mut det_unclipper_config = DetPolygonUnclipperConfig::default();
@@ -607,9 +666,12 @@ impl OcrEngineBuilder {
         Ok(OcrEngine::new(
             det_model_path,
             rec_model_path,
+            text_line_ori_model_path,
+            doc_ori_model_path,
             dictionary_path,
             det_session,
             rec_session,
+            text_line_ori_session,
             dictionary,
             config,
         ))
@@ -630,14 +692,18 @@ fn verify_file_exists(path: &Path) -> Result<(), OcrError> {
 struct EngineAssets {
     det_model_path: PathBuf,
     rec_model_path: PathBuf,
+    text_line_ori_model_path: PathBuf,
+    doc_ori_model_path: PathBuf,
     dictionary_path: PathBuf,
 }
 
 impl EngineAssets {
-    fn new(det_model_path: PathBuf, rec_model_path: PathBuf, dictionary_path: PathBuf) -> Self {
+    fn new(det_model_path: PathBuf, rec_model_path: PathBuf, text_line_ori_model_path: PathBuf, doc_ori_model_path: PathBuf, dictionary_path: PathBuf) -> Self {
         Self {
             det_model_path,
             rec_model_path,
+            text_line_ori_model_path,
+            doc_ori_model_path,
             dictionary_path,
         }
     }
@@ -648,6 +714,15 @@ impl EngineAssets {
 
     fn rec_model_path(&self) -> &Path {
         self.rec_model_path.as_path()
+    }
+
+
+    fn text_line_ori_model_path(&self) -> &Path {
+        self.text_line_ori_model_path.as_path()
+    }
+
+    fn doc_ori_model_path(&self) -> &Path {
+        self.doc_ori_model_path.as_path()
     }
 
     fn dictionary_path(&self) -> &Path {

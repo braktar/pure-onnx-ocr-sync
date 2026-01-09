@@ -301,6 +301,7 @@ impl RecPreProcessor {
             if region.height as f32 / region.width as f32 > 1.5 {
                 cropped = cropped.rotate90();
             }
+            
             let aspect_ratio = cropped.width() as f32 / cropped.height() as f32;
             let mut target_width = (aspect_ratio * target_height as f32)
                 .round()

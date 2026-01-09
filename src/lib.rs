@@ -17,6 +17,8 @@ pub mod engine;
 pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
+pub mod text_line_ori;
+// pub mod doc_ori;
 
 /// Re-export of the CTC decoding utilities so applications can customise
 /// post-processing while keeping consistent types.
