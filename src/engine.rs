@@ -469,6 +469,7 @@ impl OcrEngine {
         let image_dims = image.dimensions();
 
         // FIXME 新增文档方向矫正
+        // FIXME 新增layout判断
 
         let (polygons, detection_timings) = self
             .detection
