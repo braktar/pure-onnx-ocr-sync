@@ -180,16 +180,3 @@ impl TextLineClsInferenceSession {
         }))
     }
 }
-
-#[cfg(test)]
-mod test {
-    use crate::preprocessing::Rotation;
-    #[test]
-    fn test_array() {
-        let mut d = Vec::with_capacity(5);
-        d.push(Rotation::Deg180);
-        let mut d0 = d[0];
-        d0 = Rotation::Deg270;
-        print!("{:#?}", d);
-    }
-}
