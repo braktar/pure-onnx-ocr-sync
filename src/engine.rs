@@ -7,7 +7,7 @@ use crate::postprocessing::{
 };
 use crate::preprocessing::{
     DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, RecPreProcessor,
-    RecPreProcessorConfig, RecPreProcessorError, RecTextRegion,
+    RecPreProcessorConfig, RecPreProcessorError, RecTextRegion, Rotation,
 };
 use crate::recognition::{
     RecInferenceSession, RecPostProcessor, RecPostProcessorConfig, RecPostProcessorError,
@@ -324,6 +324,7 @@ pub struct OcrTimings {
     pub total: Duration,
     pub image_decode: Duration,
     pub detection: StageTimings,
+    pub line_ori: StageTimings,
     pub recognition: StageTimings,
 }
 
@@ -333,6 +334,7 @@ impl OcrTimings {
             total: Duration::ZERO,
             image_decode: Duration::ZERO,
             detection: StageTimings::zero(),
+            line_ori: StageTimings::zero(),
             recognition: StageTimings::zero(),
         }
     }
@@ -484,13 +486,14 @@ impl OcrEngine {
             });
         }
 
-        let regions = polygons_to_text_regions(&polygons, image_dims);
+        let regions: Vec<RecTextRegion> = polygons_to_text_regions(&polygons, image_dims);
 
-        //  修改输入输出，允许对单行文本进行旋转
-
+        //  修改输入输出，新增文本框的旋转度数
+        let (rotations, line_ori_timings) = self.text_line_ori.run_with_timings(image, &regions)?;
+        timings.line_ori = line_ori_timings;
         let (sequences, recognition_timings) =
-            self.recognition.run_with_timings(image, &regions)?;
-        timings.recognition = recognition_timings;
+            self.recognition.run_with_timings(image, &regions, &rotations)?;
+            timings.recognition = recognition_timings;
 
         if sequences.len() != polygons.len() {
             return Err(OcrError::PipelineMismatch {
@@ -821,11 +824,12 @@ impl RecognitionPipeline {
         &self,
         image: &DynamicImage,
         regions: &[RecTextRegion],
+        rotations: &[Rotation],
     ) -> Result<(Vec<DecodedSequence>, StageTimings), OcrError> {
         let preprocess_start = Instant::now();
         let batch = self
             .preprocessor
-            .process(image, regions)
+            .process(image, regions, rotations)
             .map_err(OcrError::from)?;
         let preprocess_elapsed = preprocess_start.elapsed();
 

@@ -35,6 +35,47 @@ impl std::fmt::Display for DetPreProcessorError {
 
 impl std::error::Error for DetPreProcessorError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Rotation {
+    Deg0 = 0,
+    Deg90 = 90,
+    Deg180 = 180,
+    Deg270 = 270,
+}
+
+impl Rotation {
+    pub fn from_degrees(degrees: i32) -> Self {
+        match degrees.rem_euclid(360) {
+            0 => Rotation::Deg0,
+            90 | -270 => Rotation::Deg90,
+            180 | -180 => Rotation::Deg180,
+            270 | -90 => Rotation::Deg270,
+            _ => unreachable!(), // 规范化后只可能是这四个值
+        }
+    }
+    pub fn degrees(self) -> i32 {
+        self as i32
+    }
+
+    pub fn shortest_rotation_to_zero(&self) -> i32 {
+        match self {
+            Rotation::Deg0 => 0,
+            Rotation::Deg90 => 270,
+            Rotation::Deg180 => 180,
+            Rotation::Deg270 => 90,
+        }
+    }
+    pub fn rotate_by(self, degrees: i32) -> Self {
+        Self::from_degrees(self.degrees() + degrees)
+    }
+}
+
+impl From<i32> for Rotation {
+    fn from(degrees: i32) -> Self {
+        Self::from_degrees(degrees)
+    }
+}
+
 /// Result of detection preprocessing.
 #[derive(Debug, Clone)]
 pub struct PreprocessedDetInput {
@@ -240,11 +281,11 @@ impl RecPreProcessor {
     pub fn new(config: RecPreProcessorConfig) -> Self {
         Self { config }
     }
-
     pub fn process(
         &self,
         image: &DynamicImage,
         regions: &[RecTextRegion],
+        rotations: &[Rotation],
     ) -> Result<PreprocessedRecBatch, RecPreProcessorError> {
         if regions.is_empty() {
             return Err(RecPreProcessorError::EmptyRegions);
@@ -295,13 +336,19 @@ impl RecPreProcessor {
                     region,
                 });
             }
+            let rotation = if index < rotations.len() {
+                rotations[index]
+            } else {
+                Rotation::Deg0
+            };
 
             let mut cropped = image.crop_imm(region.x, region.y, region.width, region.height);
-            // TODO if region.height:region.width> 1.5 rotate 90 degrees
-            if region.height as f32 / region.width as f32 > 1.5 {
-                cropped = cropped.rotate90();
-            }
-            
+            cropped = match rotation {
+                Rotation::Deg0 => cropped,
+                Rotation::Deg90 => cropped.rotate270(),
+                Rotation::Deg180 => cropped.rotate180(),
+                Rotation::Deg270 => cropped.rotate90(),
+            };
             let aspect_ratio = cropped.width() as f32 / cropped.height() as f32;
             let mut target_width = (aspect_ratio * target_height as f32)
                 .round()
@@ -432,9 +479,9 @@ mod tests {
             width: 80,
             height: 40,
         }];
-
+        let rotations = vec![Rotation::Deg0];
         let preprocessor = RecPreProcessor::new(config.clone());
-        let batch = preprocessor.process(&image, &regions).unwrap();
+        let batch = preprocessor.process(&image, &regions, &rotations).unwrap();
 
         let expected_shape = [
             1,
@@ -481,7 +528,8 @@ mod tests {
         ];
 
         let preprocessor = RecPreProcessor::new(config.clone());
-        let batch = preprocessor.process(&image, &regions).unwrap();
+        let rotations = vec![Rotation::Deg0, Rotation::Deg0];
+        let batch = preprocessor.process(&image, &regions, &rotations).unwrap();
 
         assert_eq!(batch.valid_widths, vec![96, 24]);
 
@@ -505,8 +553,11 @@ mod tests {
             height: 20,
         }];
 
+        let rotations = vec![Rotation::Deg0];
         let preprocessor = RecPreProcessor::new(config);
-        let error = preprocessor.process(&image, &regions).unwrap_err();
+        let error = preprocessor
+            .process(&image, &regions, &rotations)
+            .unwrap_err();
         assert!(matches!(
             error,
             RecPreProcessorError::RegionOutOfBounds { index: 0, .. }
@@ -524,8 +575,9 @@ mod tests {
             height: 20,
         }];
 
+        let rotations = vec![Rotation::Deg0];
         let preprocessor = RecPreProcessor::new(config);
-        let error = preprocessor.process(&image, &regions).unwrap_err();
+        let error = preprocessor.process(&image, &regions, &rotations).unwrap_err();
         assert!(matches!(error, RecPreProcessorError::ZeroArea { index: 0 }));
     }
 }

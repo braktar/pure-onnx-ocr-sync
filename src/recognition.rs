@@ -258,7 +258,7 @@ impl RecPostProcessor {
 mod tests {
     use super::*;
     use crate::dictionary::RecDictionary;
-    use crate::preprocessing::{RecPreProcessor, RecPreProcessorConfig, RecTextRegion};
+    use crate::preprocessing::{RecPreProcessor, RecPreProcessorConfig, RecTextRegion, Rotation};
     use image::{DynamicImage, ImageBuffer, Rgb};
     use ndarray::Array3;
     use std::env;
@@ -333,8 +333,9 @@ mod tests {
             width: 120,
             height: 60,
         }];
+        let rotations = vec![Rotation::Deg0];
         let batch = preprocessor
-            .process(&image, &regions)
+            .process(&image, &regions, &rotations)
             .expect("recognition preprocessing should succeed");
 
         let output = session.run(&batch)?;

@@ -1,15 +1,11 @@
 use std::path::Path;
-use image::DynamicImage;
+use std::time::{Duration, Instant};
 use image::imageops::FilterType::Triangle;
 use tract_onnx::prelude::*;
 use tract_onnx::tract_core::anyhow::anyhow;
-
-#[derive(Debug, Clone)]
-pub struct TextLineClsInferenceOutput {
-    pub score_0: f32,
-    pub score_180: f32,
-    pub is_180: bool
-}
+use image::{DynamicImage, GenericImageView};
+use crate::{OcrError, RecPreProcessorError, RecTextRegion, StageTimings};
+use crate::preprocessing::Rotation;
 
 #[derive(Debug)]
 pub struct TextLineClsInferenceSession {
@@ -53,19 +49,66 @@ impl TextLineClsInferenceSession {
         })
     }
 
-    pub fn run(&self, images: Vec<DynamicImage>) -> TractResult<Vec<TextLineClsInferenceOutput>> {
+    pub fn extract_images(&self,
+        image: &DynamicImage,
+        regions: &[RecTextRegion],) -> Result<Vec<DynamicImage>, RecPreProcessorError> {
+            if regions.is_empty() {
+            return Err(RecPreProcessorError::EmptyRegions);
+        }
+
+        let (img_w, img_h) = image.dimensions();
+        if img_w == 0 || img_h == 0 {
+            return Err(RecPreProcessorError::EmptyImage);
+        }
+        let batch_size = regions.len();
+        let mut crop_images = Vec::with_capacity(batch_size);
+        for (index, region) in regions.iter().copied().enumerate() {
+            if region.width == 0 || region.height == 0 {
+                return Err(RecPreProcessorError::ZeroArea { index });
+            }
+
+            if region.x >= img_w
+                || region.y >= img_h
+                || region.x + region.width > img_w
+                || region.y + region.height > img_h
+            {
+                return Err(RecPreProcessorError::RegionOutOfBounds {
+                    index,
+                    image_dims: (img_w, img_h),
+                    region,
+                });
+            }
+            let cropped = image.crop_imm(region.x, region.y, region.width, region.height);
+            crop_images.push(cropped);
+        }
+        Ok(crop_images)
+    }
+    
+    pub fn run(&self, images: Vec<DynamicImage>) -> TractResult<Vec<Rotation>> {
+        let batch_size = images.len();
+
         println!(
             "[TextLineClsInfer] Running inference with input dims {:?}",
-            images.len()
+            batch_size
         );
-
+        
         let (width, height) = (self.width as u32, self.height as u32);
         // ImageNet 均值和标准差
         let mean = [0.485, 0.456, 0.406];  // R, G, B
         let std = [0.229, 0.224, 0.225];   // R, G, B
-        let mut tensor = Vec::with_capacity(( (images.len() as u32) * 3 * height * width) as usize);
-        images.iter().map(|img| {
-            let rgb_img = img.resize_exact(width, height, 
+        let mut tensor = Vec::with_capacity(( (batch_size as u32) * 3 * height * width) as usize);
+        let mut rotations = Vec::with_capacity(batch_size);
+        images.into_iter().map(|img| {
+            let mut rotation = Rotation::Deg0;
+            let rotated = 
+            if img.height() as f32 / img.width() as f32 > 1.5 {
+                rotation = Rotation::Deg90;
+                img.rotate90()
+            } else {
+                img
+            };
+
+            let rgb_img = rotated.resize_exact(width, height, 
                 Triangle).to_rgb8();
             let mut tensor_data = Vec::with_capacity((3 * height * width) as usize);
             for channel in 0..3 {
@@ -76,12 +119,13 @@ impl TextLineClsInferenceSession {
                     }
                 }
             }
-            tensor_data
-        }).for_each(|mut tensor_data| {
+            (tensor_data, rotation)
+        }).for_each(|(mut tensor_data, rotation)| {
             tensor.append(&mut tensor_data);
+            rotations.push(rotation);
         });
         let tensor =
-            Tensor::from_shape(&[images.len() as usize, 3, height as usize, width as usize], &tensor)?;
+            Tensor::from_shape(&[batch_size as usize, 3, height as usize, width as usize], &tensor)?;
         println!("[TextLineClsInfer] Running inference...");
         let start = std::time::Instant::now();
         let outputs = self.base_model.run(tvec!(tensor.into()))?;
@@ -96,6 +140,7 @@ impl TextLineClsInferenceSession {
         let batch_size = tensor_view.shape()[0];
         let mut result = Vec::with_capacity(batch_size);
         for batch in 0..batch_size {
+            let mut rotation = rotations[batch];
             let class_0_prob = tensor_view[[batch, 0]];
             let class_1_prob = tensor_view[[batch, 1]];
 
@@ -112,12 +157,39 @@ impl TextLineClsInferenceSession {
                 predicted_class,
                 confidence * 100.0
             );
-            result.push(TextLineClsInferenceOutput{
-                score_0: class_0_prob,
-                score_180: class_1_prob,
-                is_180: class_0_prob < class_1_prob
-            });
+            if class_0_prob < class_1_prob {
+                rotation = rotation.rotate_by(180);
+            }
+            result.push(rotation);
         }
         Ok(result)
+    }
+
+    
+    pub fn run_with_timings(&self, image: &DynamicImage, regions: &Vec<RecTextRegion>) -> Result<(Vec<Rotation>, StageTimings), OcrError> {
+        let preprocess_now = Instant::now();
+        let cropeds = self.extract_images(image, regions).map_err(|e|OcrError::RecognitionPreprocess { source: e })?;
+        let preprocess_timeing = preprocess_now.elapsed();
+        let inference_now = Instant::now();
+        let result = self.run(cropeds).map_err(|e| OcrError::RecognitionInference { source: e })?;
+        let inference_timeing = inference_now.elapsed();
+        Ok((result, StageTimings {
+            preprocess: preprocess_timeing,
+            inference: inference_timeing,
+            postprocess: Duration::ZERO,
+        }))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::preprocessing::Rotation;
+    #[test]
+    fn test_array() {
+        let mut d = Vec::with_capacity(5);
+        d.push(Rotation::Deg180);
+        let mut d0 = d[0];
+        d0 = Rotation::Deg270;
+        print!("{:#?}", d);
     }
 }
