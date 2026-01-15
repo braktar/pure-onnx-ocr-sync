@@ -1,6 +1,6 @@
 [package]
 name = "pure-onnx-ocr-sync"
-version = "0.1.2"
+version = "0.1.3"
 rust-version = "1.70"
 edition = "2021"
 description = "【Sync Version】Pure Rust OCR pipeline that runs PaddleOCR DBNet + SVTR ONNX models without C/C++ dependencies."
