@@ -102,9 +102,9 @@ impl DocOriInferenceSession {
         let tensor_view = output_tensor.to_array_view::<f32>()?;
         for i in 0..batch_size {
             let class_0_prob = tensor_view[[i, 0]];
-            let class_270_prob = tensor_view[[i, 1]];
+            let class_90_prob = tensor_view[[i, 1]];
             let class_180_prob = tensor_view[[i, 2]];
-            let class_90_prob = tensor_view[[i, 3]];
+            let class_270_prob = tensor_view[[i, 3]];
             let angle_probs = [
                 (Rotation::Deg0, class_0_prob),
                 (Rotation::Deg90, class_90_prob), 

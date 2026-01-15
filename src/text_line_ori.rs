@@ -135,7 +135,7 @@ impl TextLineClsInferenceSession {
                 let mut rotated = img.clone();
                 if img.height() as f32 / img.width() as f32 > 1.5 {
                     rotation = Rotation::Deg90;
-                    rotated = img.rotate90()
+                    rotated = img.rotate270();
                 }
                 let rgb_img = rotated.resize_exact(width, height, Triangle).to_rgb8();
                 for channel in 0..3 {
@@ -168,7 +168,6 @@ impl TextLineClsInferenceSession {
 
         let tensor_view = output_tensor.to_array_view::<f32>()?;
         // let batch_size = tensor_view.shape()[0];
-        assert_eq!(tensor_view.shape()[0], real_batch_size);
         let mut real_batch_index: i32 = -1;
         for i in 0..batch_size {
             let need_process = process_image_indexs[i];
