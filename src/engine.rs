@@ -1,6 +1,7 @@
 use crate::ctc::DecodedSequence;
 use crate::detection::DetInferenceSession;
 use crate::dictionary::{DictionaryError, RecDictionary};
+use crate::doc_ori::DocOriInferenceSession;
 use crate::postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
     DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError,
@@ -291,6 +292,7 @@ pub struct OcrEngine {
     detection: DetectionPipeline,
     recognition: RecognitionPipeline,
     text_line_ori: Arc<TextLineClsInferenceSession>,
+    doc_ori: Arc<DocOriInferenceSession>,
     config: OcrEngineConfig,
 }
 
@@ -322,6 +324,7 @@ impl StageTimings {
 #[derive(Debug, Clone)]
 pub struct OcrTimings {
     pub total: Duration,
+    pub doc_ori: StageTimings,
     pub image_decode: Duration,
     pub detection: StageTimings,
     pub line_ori: StageTimings,
@@ -333,6 +336,7 @@ impl OcrTimings {
         Self {
             total: Duration::ZERO,
             image_decode: Duration::ZERO,
+            doc_ori: StageTimings::zero(),
             detection: StageTimings::zero(),
             line_ori: StageTimings::zero(),
             recognition: StageTimings::zero(),
@@ -356,6 +360,7 @@ impl OcrEngine {
         det_session: DetInferenceSession,
         rec_session: RecInferenceSession,
         text_line_ori_session: TextLineClsInferenceSession,
+        doc_ori_session: DocOriInferenceSession,
         dictionary: RecDictionary,
         config: OcrEngineConfig,
     ) -> Self {
@@ -364,6 +369,7 @@ impl OcrEngine {
         let det_session = Arc::new(det_session);
         let rec_session = Arc::new(rec_session);
         let text_line_ori: Arc<TextLineClsInferenceSession> = Arc::new(text_line_ori_session);
+        let doc_ori = Arc::new(doc_ori_session);
         let dictionary = Arc::new(dictionary);
 
         let detection = DetectionPipeline::new(
@@ -386,6 +392,7 @@ impl OcrEngine {
             detection,
             recognition,
             text_line_ori,
+            doc_ori,
             config,
         }
     }
@@ -469,8 +476,17 @@ impl OcrEngine {
         let pipeline_start = Instant::now();
         let mut timings = OcrTimings::new();
         let image_dims = image.dimensions();
-
-        // FIXME 新增文档方向矫正
+        
+        let (rations, timeings) = self.doc_ori.run_with_timings(vec![image.clone()])?;
+        timings.doc_ori = timeings;
+        let ration = rations[0];
+        let rotated = match ration {
+            Rotation::Deg0 => image.clone(),
+            Rotation::Deg180 => image.rotate180(),
+            Rotation::Deg270 => image.rotate90(),
+            Rotation::Deg90 => image.rotate270()
+        };
+        let image = & rotated;
         // FIXME 新增layout判断
 
         let (polygons, detection_timings) = self
@@ -647,12 +663,11 @@ impl OcrEngineBuilder {
                 source,
                 path: text_line_ori_model_path.clone(),
             })?; 
-        // TODO add doc ori model
-        // let text_line_ori_session =
-        //     TextLineClsInferenceSession::load(&text_line_ori_model_path).map_err(|source| OcrError::ModelLoad {
-        //         source,
-        //         path: text_line_ori_model_path.clone(),
-        //     })?; 
+        let doc_ori_session =
+            DocOriInferenceSession::load(&doc_ori_model_path).map_err(|source| OcrError::ModelLoad {
+                source,
+                path: doc_ori_model_path.clone(),
+            })?; 
         let dictionary = RecDictionary::from_path(&dictionary_path)?;
 
         let mut det_unclipper_config = DetPolygonUnclipperConfig::default();
@@ -676,6 +691,7 @@ impl OcrEngineBuilder {
             det_session,
             rec_session,
             text_line_ori_session,
+            doc_ori_session,
             dictionary,
             config,
         ))
