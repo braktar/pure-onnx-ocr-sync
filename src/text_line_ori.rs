@@ -116,7 +116,7 @@ impl TextLineClsInferenceSession {
             process_image_indexs.fill(false);
             for i in 0..batch_size {
                 let img = &images[i];
-                if img.height() as f32 / img.width() as f32 > 1.5 {
+                if img.height() as f32 / img.width() as f32 > 2.0 {
                     process_image_indexs[i] = true;
                     real_batch_size += 1;
                 }
@@ -133,7 +133,7 @@ impl TextLineClsInferenceSession {
             let need_process = process_image_indexs[i];
             if need_process {
                 let mut rotated = img.clone();
-                if img.height() as f32 / img.width() as f32 > 1.5 {
+                if img.height() as f32 / img.width() as f32 > 2.0 {
                     rotation = Rotation::Deg90;
                     rotated = img.rotate270();
                 }
@@ -175,9 +175,13 @@ impl TextLineClsInferenceSession {
                 real_batch_index += 1;
                 let class_0_prob = tensor_view[[real_batch_index as usize, 0]];
                 let class_1_prob = tensor_view[[real_batch_index as usize, 1]];
-                let need_rotation_180 = class_0_prob < class_1_prob;
-                if need_rotation_180 {
-                    rotations[i] = rotations[i].rotate_by(180);
+                if class_0_prob.max(class_1_prob) > 0.7 {
+                    let need_rotation_180 = class_0_prob < class_1_prob;
+                    if need_rotation_180 {
+                        rotations[i] = rotations[i].rotate_by(180);
+                    }
+                } else {
+                    rotations[i] = Rotation::Deg0;
                 }
             }
         }
