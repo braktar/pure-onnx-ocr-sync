@@ -21,13 +21,21 @@ pub struct DetInferenceSession {
 }
 
 impl DetInferenceSession {
+    pub fn load_from_bytes(bytes: &[u8]) -> TractResult<Self> {
+        println!("[DetInfer] Loading detection model from memory ({} bytes)", bytes.len());
+        let mut inference_model = crate::tract_load::inference_model_from_bytes(bytes)?;
+        Self::prepare_detection_model(inference_model)
+    }
+
     pub fn load(model_path: impl AsRef<Path>) -> TractResult<Self> {
         let model_path = model_path.as_ref();
         println!("[DetInfer] Loading detection model from {:?}", model_path);
 
-        let mut inference_model = tract_onnx::onnx()
-            .with_ignore_output_shapes(true)
-            .model_for_path(model_path)?;
+        let mut inference_model = crate::tract_load::paddle_onnx().model_for_path(model_path)?;
+        Self::prepare_detection_model(inference_model)
+    }
+
+    fn prepare_detection_model(mut inference_model: InferenceModel) -> TractResult<Self> {
 
         let height = inference_model.symbol_table.sym("height");
         let width = inference_model.symbol_table.sym("width");

@@ -11,6 +11,8 @@
 //! when you need to plug specific stages into an existing pipeline.
 
 pub mod ctc;
+mod tract_load;
+mod timer;
 pub mod detection;
 pub mod dictionary;
 pub mod engine;
@@ -28,8 +30,8 @@ pub use detection::{DetInferenceOutput, DetInferenceSession};
 pub use dictionary::{DictionaryError, RecDictionary};
 /// High-level façade providing an ergonomic OCR API.
 pub use engine::{
-    OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError, OcrResult, OcrRunWithMetrics,
-    OcrTimings, StageTimings,
+    central_address_region, OnnxModelBytes, OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError,
+    OcrResult, OcrRunWithMetrics, OcrTimings, StageTimings,
 };
 /// Geometry primitives surfaced at the crate root for convenience.
 pub use geo_types::{Point, Polygon};
@@ -125,11 +127,9 @@ fn run_dummy_inference(
     let model_path = model_path.as_ref();
     println!("[{}] Loading model from {:?}", label, model_path);
 
-    let start = std::time::Instant::now();
+    let start = crate::timer::Instant::now();
 
-    let mut model = tract_onnx::onnx()
-        .with_ignore_output_shapes(true)
-        .model_for_path(model_path)?;
+    let mut model = crate::tract_load::paddle_onnx().model_for_path(model_path)?;
     println!("[{}] Model loaded, elapsed: {:?}", label, start.elapsed());
 
     model.set_input_fact(0, InferenceFact::from(&dummy_input))?;
@@ -140,28 +140,7 @@ fn run_dummy_inference(
         label,
         start.elapsed()
     );
-    let model = model.into_typed()?;
-
-    println!(
-        "[{}] Starting decluttering, elapsed: {:?}",
-        label,
-        start.elapsed()
-    );
-    let model = model.into_decluttered()?;
-
-    println!(
-        "[{}] Starting optimization, elapsed: {:?}",
-        label,
-        start.elapsed()
-    );
-    let model = model.into_optimized()?;
-
-    println!(
-        "[{}] Making runnable, elapsed: {:?}",
-        label,
-        start.elapsed()
-    );
-    let model = model.into_runnable()?;
+    let model = model.into_typed()?.into_runnable()?;
 
     println!("[{}] Total preparation time: {:?}", label, start.elapsed());
 
@@ -212,6 +191,20 @@ mod tests {
             println!("Output tensor #{} shape: {:?}", i, tensor.shape());
         }
 
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "dummy inference takes >60s; run with `cargo test -- --ignored`"]
+    fn mobile_svtr_dummy_inference_runs() -> TractResult<()> {
+        let model_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../models/ocr/PP-OCRv5_mobile_rec_infer.onnx");
+        if !model_path.exists() {
+            eprintln!("skip: mobile rec model not found at {:?}", model_path);
+            return Ok(());
+        }
+        let outputs = run_svtr_dummy_inference(&model_path)?;
+        assert!(!outputs.is_empty());
         Ok(())
     }
 

@@ -14,14 +14,26 @@ use crate::recognition::{
     RecInferenceSession, RecPostProcessor, RecPostProcessorConfig, RecPostProcessorError,
 };
 use crate::text_line_ori::TextLineClsInferenceSession;
-use geo_types::Polygon;
+
+/// In-memory ONNX assets for hosts without a filesystem (browser WASM).
+#[derive(Debug, Clone, Copy)]
+pub struct OnnxModelBytes<'a> {
+    pub det: &'a [u8],
+    pub rec: &'a [u8],
+    pub text_line_ori: &'a [u8],
+    pub doc_ori: &'a [u8],
+    pub dictionary: &'a [u8],
+}
+use geo_types::{LineString, Polygon};
 use image::{DynamicImage, GenericImageView, ImageError};
 use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::timer::Instant;
 use tract_onnx::prelude::TractError;
 
 /// Errors that can occur while building or using the OCR engine.
@@ -130,6 +142,88 @@ impl From<RecPostProcessorError> for OcrError {
     fn from(source: RecPostProcessorError) -> Self {
         OcrError::RecognitionPostProcess { source }
     }
+}
+
+/// Central address band when DBNet finds no text (blurry webcam captures).
+///
+/// Geometry matches `lib_know_core::detection::heuristic_label_bbox`.
+pub fn central_address_region(image_dims: (u32, u32)) -> RecTextRegion {
+    let (image_width, image_height) = image_dims;
+    let margin_x = (image_width as f32 * 0.04).round() as u32;
+    let y = (image_height as f32 * 0.28).round() as u32;
+    let height = (image_height as f32 * 0.42).round() as u32;
+    let width = image_width.saturating_sub(margin_x.saturating_mul(2)).max(1);
+
+    RecTextRegion {
+        x: margin_x,
+        y: y.min(image_height.saturating_sub(1)),
+        width,
+        height: height
+            .min(image_height.saturating_sub(y))
+            .max(1),
+    }
+}
+
+/// Split the central band into horizontal strips — SVTR expects single text lines.
+fn address_line_regions(image_dims: (u32, u32), line_count: u32) -> Vec<RecTextRegion> {
+    let band = central_address_region(image_dims);
+    let line_count = line_count.max(1);
+    let base_h = (band.height / line_count).max(8);
+
+    (0..line_count)
+        .map(|index| {
+            let y = band.y + index * base_h;
+            let remaining = band
+                .y
+                .saturating_add(band.height)
+                .saturating_sub(y);
+            let height = if index + 1 == line_count {
+                remaining.max(8)
+            } else {
+                base_h.min(remaining).max(8)
+            };
+
+            RecTextRegion {
+                x: band.x,
+                y,
+                width: band.width,
+                height,
+            }
+        })
+        .collect()
+}
+
+fn enhance_for_detection(image: &DynamicImage) -> DynamicImage {
+    let mut rgba = image.to_rgba8();
+    for channel in 0..3 {
+        let mut min = 255u8;
+        let mut max = 0u8;
+        for px in rgba.pixels() {
+            let v = px.0[channel];
+            min = min.min(v);
+            max = max.max(v);
+        }
+        if max <= min {
+            continue;
+        }
+        let range = (max - min) as f32;
+        for px in rgba.pixels_mut() {
+            let normalized = (px.0[channel].saturating_sub(min) as f32) / range;
+            px.0[channel] = (normalized * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    DynamicImage::ImageRgba8(rgba)
+}
+
+fn region_to_polygon(region: &RecTextRegion) -> Polygon<f64> {
+    let x1 = region.x as f64;
+    let y1 = region.y as f64;
+    let x2 = (region.x + region.width) as f64;
+    let y2 = (region.y + region.height) as f64;
+    Polygon::new(
+        LineString::from(vec![(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)]),
+        vec![],
+    )
 }
 
 fn polygons_to_text_regions(
@@ -294,6 +388,8 @@ pub struct OcrEngine {
     text_line_ori: Arc<TextLineClsInferenceSession>,
     doc_ori: Arc<DocOriInferenceSession>,
     config: OcrEngineConfig,
+    /// Skip doc orientation + fewer DBNet scales (mobile / WASM live camera).
+    fast_detection: std::sync::atomic::AtomicBool,
 }
 
 /// Result of running the full OCR pipeline for a single detected region.
@@ -394,7 +490,19 @@ impl OcrEngine {
             text_line_ori,
             doc_ori,
             config,
+            fast_detection: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Faster DBNet path for mobile browsers (skip doc-ori, fewer scales).
+    pub fn set_fast_detection(&self, enabled: bool) {
+        self.fast_detection
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_fast_detection(&self) -> bool {
+        self.fast_detection
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Executes the full OCR pipeline on an image located on disk.
@@ -462,6 +570,88 @@ impl OcrEngine {
         Ok(run.results)
     }
 
+    /// Runs DBNet text detection only (with document orientation correction).
+    ///
+    /// Tries several long-side limits so tract can compile a working graph and blurry
+    /// frames still yield text boxes.
+    pub fn detect_text_regions(
+        &self,
+        image: &DynamicImage,
+    ) -> Result<Vec<RecTextRegion>, OcrError> {
+        let oriented = self.orient_image_for_detection(image)?;
+        let image_dims = oriented.dimensions();
+        let (polygons, _) = self.detect_polygons_multi_scale(&oriented, image_dims)?;
+        if !polygons.is_empty() {
+            return Ok(polygons_to_text_regions(&polygons, image_dims));
+        }
+
+        if self.is_fast_detection() {
+            return Ok(Vec::new());
+        }
+
+        // Blurry webcam frames: retry DBNet on a contrast-stretched copy.
+        let enhanced = enhance_for_detection(&oriented);
+        let (polygons, _) = self.detect_polygons_multi_scale(&enhanced, image_dims)?;
+        Ok(polygons_to_text_regions(&polygons, image_dims))
+    }
+
+    fn detect_polygons_multi_scale(
+        &self,
+        image: &DynamicImage,
+        image_dims: (u32, u32),
+    ) -> Result<(Vec<Polygon<f64>>, StageTimings), OcrError> {
+        let default_limit = self.config.det_preprocessor.limit_side_len;
+        let mut limits = if self.is_fast_detection() {
+            // Single small scale — mobile WASM cannot afford multi-scale + enhance retries.
+            vec![320]
+        } else {
+            vec![960, 800, 640, 480, 320, default_limit]
+        };
+        limits.sort_by(|a, b| b.cmp(a));
+        limits.dedup();
+
+        let mut empty_timings = StageTimings::zero();
+
+        for limit in limits {
+            match self
+                .detection
+                .detect_polygons_with_timings_at_limit(image, image_dims, limit)
+            {
+                Ok((polygons, timings)) if !polygons.is_empty() => {
+                    return Ok((polygons, timings));
+                }
+                Ok((_, timings)) => {
+                    empty_timings = timings;
+                }
+                // Tract may fail to compile some tensor shapes — keep trying other scales.
+                Err(_) => continue,
+            }
+        }
+
+        Ok((Vec::new(), empty_timings))
+    }
+
+    fn orient_image_for_detection(&self, image: &DynamicImage) -> Result<DynamicImage, OcrError> {
+        if self
+            .fast_detection
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Ok(image.clone());
+        }
+
+        let (rotations, _) = self.doc_ori.run_with_timings(vec![image.clone()])?;
+        let rotation = rotations
+            .into_iter()
+            .next()
+            .unwrap_or(Rotation::Deg0);
+        Ok(match rotation {
+            Rotation::Deg0 => image.clone(),
+            Rotation::Deg180 => image.rotate180(),
+            Rotation::Deg270 => image.rotate90(),
+            Rotation::Deg90 => image.rotate270(),
+        })
+    }
+
     pub fn run_with_metrics_from_image(
         &self,
         image: &DynamicImage,
@@ -489,42 +679,42 @@ impl OcrEngine {
         let image = & rotated;
         // FIXME 新增layout判断
 
-        let (polygons, detection_timings) = self
-            .detection
-            .detect_polygons_with_timings(image, image_dims)?;
+        let (polygons, detection_timings) =
+            self.detect_polygons_multi_scale(image, image_dims)?;
         timings.detection = detection_timings;
 
-        if polygons.is_empty() {
-            timings.total = pipeline_start.elapsed();
-            return Ok(OcrRunWithMetrics {
-                results: Vec::new(),
-                timings,
-            });
-        }
-
-        let regions: Vec<RecTextRegion> = polygons_to_text_regions(&polygons, image_dims);
+        let regions = if polygons.is_empty() {
+            address_line_regions(image_dims, 4)
+        } else {
+            polygons_to_text_regions(&polygons, image_dims)
+        };
 
         //  修改输入输出，新增文本框的旋转度数
         let (rotations, line_ori_timings) = self.text_line_ori.run_with_timings(image, &regions)?;
         timings.line_ori = line_ori_timings;
-        let (sequences, recognition_timings) =
-            self.recognition.run_with_timings(image, &regions, &rotations)?;
-            timings.recognition = recognition_timings;
+        let (sequences, recognition_timings) = if polygons.is_empty() {
+            self.recognition
+                .run_lines_sequentially(image, &regions, &rotations)?
+        } else {
+            self.recognition
+                .run_with_timings(image, &regions, &rotations)?
+        };
+        timings.recognition = recognition_timings;
 
-        if sequences.len() != polygons.len() {
+        if sequences.len() != regions.len() {
             return Err(OcrError::PipelineMismatch {
-                detection_regions: polygons.len(),
+                detection_regions: regions.len(),
                 recognition_results: sequences.len(),
             });
         }
 
-        let results: Vec<OcrResult> = polygons
-            .into_iter()
+        let results: Vec<OcrResult> = regions
+            .iter()
             .zip(sequences.into_iter())
-            .map(|(polygon, sequence)| OcrResult {
+            .map(|(region, sequence)| OcrResult {
                 text: sequence.text,
                 confidence: sequence.confidence,
-                bounding_box: polygon,
+                bounding_box: region_to_polygon(region),
             })
             .collect();
 
@@ -544,6 +734,7 @@ pub struct OcrEngineBuilder {
     dictionary_path: Option<PathBuf>,
     det_limit_side_len: u32,
     det_unclip_ratio: f32,
+    det_prob_threshold: Option<f32>,
     rec_batch_size: usize,
 }
 
@@ -557,6 +748,7 @@ impl Default for OcrEngineBuilder {
             dictionary_path: None,
             det_limit_side_len: DetPreProcessorConfig::default().limit_side_len,
             det_unclip_ratio: DetPolygonUnclipperConfig::default().unclip_ratio,
+            det_prob_threshold: None,
             rec_batch_size: OcrEngineConfig::default().rec_batch_size,
         }
     }
@@ -609,10 +801,96 @@ impl OcrEngineBuilder {
         self
     }
 
+    /// Sets the DBNet probability threshold (lower = more sensitive on blurry text).
+    pub fn det_prob_threshold(mut self, threshold: f32) -> Self {
+        self.det_prob_threshold = Some(threshold);
+        self
+    }
+
     /// Sets the maximum batch size for recognition.
     pub fn rec_batch_size(mut self, size: usize) -> Self {
         self.rec_batch_size = size;
         self
+    }
+
+    fn assemble_config(
+        det_preprocessor: DetPreProcessorConfig,
+        det_unclipper: DetPolygonUnclipperConfig,
+        det_prob_threshold: Option<f32>,
+        rec_batch_size: usize,
+        blank_id: usize,
+    ) -> OcrEngineConfig {
+        let mut config = OcrEngineConfig::default();
+        config.det_preprocessor = det_preprocessor;
+        config.det_unclipper = det_unclipper;
+        config.rec_batch_size = rec_batch_size;
+        if let Some(threshold) = det_prob_threshold {
+            config.det_postprocessor.threshold = threshold.clamp(0.0, 1.0);
+        }
+        config.rec_postprocessor.blank_id = blank_id;
+        config
+    }
+
+    /// Consumes the builder and constructs an [`OcrEngine`] from in-memory ONNX buffers.
+    pub fn build_from_bytes(self, models: OnnxModelBytes<'_>) -> Result<OcrEngine, OcrError> {
+        if self.rec_batch_size == 0 {
+            return Err(OcrError::InvalidConfiguration {
+                message: "rec_batch_size must be greater than zero".to_string(),
+            });
+        }
+
+        let det_session = DetInferenceSession::load_from_bytes(models.det)
+            .map_err(|source| OcrError::ModelLoad {
+                source,
+                path: PathBuf::from("<memory>/det.onnx"),
+            })?;
+        let rec_session = RecInferenceSession::load_from_bytes(models.rec)
+            .map_err(|source| OcrError::ModelLoad {
+                source,
+                path: PathBuf::from("<memory>/rec.onnx"),
+            })?;
+        let text_line_ori_session =
+            TextLineClsInferenceSession::load_from_bytes(models.text_line_ori).map_err(|source| {
+                OcrError::ModelLoad {
+                    source,
+                    path: PathBuf::from("<memory>/textline_ori.onnx"),
+                }
+            })?;
+        let doc_ori_session = DocOriInferenceSession::load_from_bytes(models.doc_ori).map_err(
+            |source| OcrError::ModelLoad {
+                source,
+                path: PathBuf::from("<memory>/doc_ori.onnx"),
+            },
+        )?;
+        let dictionary = RecDictionary::from_utf8_bytes(models.dictionary)?;
+
+        let mut det_unclipper_config = DetPolygonUnclipperConfig::default();
+        det_unclipper_config.unclip_ratio = self.det_unclip_ratio;
+
+        let mut det_preprocessor_config = DetPreProcessorConfig::default();
+        det_preprocessor_config.limit_side_len = self.det_limit_side_len;
+
+        let config = Self::assemble_config(
+            det_preprocessor_config,
+            det_unclipper_config,
+            self.det_prob_threshold,
+            self.rec_batch_size,
+            dictionary.blank_id(),
+        );
+
+        Ok(OcrEngine::new(
+            PathBuf::from("<memory>/det.onnx"),
+            PathBuf::from("<memory>/rec.onnx"),
+            PathBuf::from("<memory>/textline_ori.onnx"),
+            PathBuf::from("<memory>/doc_ori.onnx"),
+            PathBuf::from("<memory>/dictionary.txt"),
+            det_session,
+            rec_session,
+            text_line_ori_session,
+            doc_ori_session,
+            dictionary,
+            config,
+        ))
     }
 
     /// Consumes the builder and attempts to construct an [`OcrEngine`].
@@ -676,11 +954,13 @@ impl OcrEngineBuilder {
         let mut det_preprocessor_config = DetPreProcessorConfig::default();
         det_preprocessor_config.limit_side_len = self.det_limit_side_len;
 
-        let mut config = OcrEngineConfig::default();
-        config.det_preprocessor = det_preprocessor_config;
-        config.det_unclipper = det_unclipper_config;
-        config.rec_batch_size = self.rec_batch_size;
-        config.rec_postprocessor.blank_id = dictionary.blank_id();
+        let config = Self::assemble_config(
+            det_preprocessor_config,
+            det_unclipper_config,
+            self.det_prob_threshold,
+            self.rec_batch_size,
+            dictionary.blank_id(),
+        );
 
         Ok(OcrEngine::new(
             det_model_path,
@@ -781,8 +1061,24 @@ impl DetectionPipeline {
         image: &DynamicImage,
         image_dims: (u32, u32),
     ) -> Result<(Vec<Polygon<f64>>, StageTimings), OcrError> {
+        self.detect_polygons_with_timings_at_limit(
+            image,
+            image_dims,
+            self.preprocessor.limit_side_len(),
+        )
+    }
+
+    fn detect_polygons_with_timings_at_limit(
+        &self,
+        image: &DynamicImage,
+        image_dims: (u32, u32),
+        limit_side_len: u32,
+    ) -> Result<(Vec<Polygon<f64>>, StageTimings), OcrError> {
         let preprocess_start = Instant::now();
-        let preprocessed = self.preprocessor.process(image).map_err(OcrError::from)?;
+        let preprocessed = self
+            .preprocessor
+            .process_with_limit(image, limit_side_len)
+            .map_err(OcrError::from)?;
         let preprocess_elapsed = preprocess_start.elapsed();
 
         let inference_start = Instant::now();
@@ -834,6 +1130,31 @@ impl RecognitionPipeline {
             session,
             postprocessor,
         }
+    }
+
+    /// Runs SVTR one line at a time — batch>1 triggers tract ConvHir failures on some builds.
+    fn run_lines_sequentially(
+        &self,
+        image: &DynamicImage,
+        regions: &[RecTextRegion],
+        rotations: &[Rotation],
+    ) -> Result<(Vec<DecodedSequence>, StageTimings), OcrError> {
+        let mut sequences = Vec::with_capacity(regions.len());
+        let mut timings = StageTimings::zero();
+
+        for (index, region) in regions.iter().copied().enumerate() {
+            let rotation = rotations.get(index).copied().unwrap_or(Rotation::Deg0);
+            let (mut line, line_timings) =
+                self.run_with_timings(image, &[region], &[rotation])?;
+            timings.preprocess += line_timings.preprocess;
+            timings.inference += line_timings.inference;
+            timings.postprocess += line_timings.postprocess;
+            if let Some(sequence) = line.pop() {
+                sequences.push(sequence);
+            }
+        }
+
+        Ok((sequences, timings))
     }
 
     fn run_with_timings(

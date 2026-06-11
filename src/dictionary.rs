@@ -70,13 +70,24 @@ impl RecDictionary {
     ///
     /// Each non-empty line is treated as a token. Lines containing only
     /// whitespace are ignored. Duplicate tokens result in an error.
+    pub fn from_utf8_bytes(bytes: &[u8]) -> Result<Self, DictionaryError> {
+        let contents = std::str::from_utf8(bytes).map_err(|source| DictionaryError::Io {
+            source: io::Error::new(io::ErrorKind::InvalidData, source),
+            path: PathBuf::from("<memory>"),
+        })?;
+        Self::parse_contents(contents, PathBuf::from("<memory>"))
+    }
+
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, DictionaryError> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path).map_err(|source| DictionaryError::Io {
             source,
             path: path.to_path_buf(),
         })?;
+        Self::parse_contents(&contents, path.to_path_buf())
+    }
 
+    fn parse_contents(contents: &str, path: PathBuf) -> Result<Self, DictionaryError> {
         let mut tokens = Vec::new();
         let mut reverse = HashMap::new();
 

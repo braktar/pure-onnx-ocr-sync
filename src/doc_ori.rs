@@ -3,7 +3,9 @@ use crate::{OcrError, StageTimings};
 use image::imageops::FilterType::Triangle;
 use image::{DynamicImage};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::timer::Instant;
 use tract_onnx::prelude::*;
 use tract_onnx::tract_core::anyhow::anyhow;
 
@@ -15,17 +17,28 @@ pub struct DocOriInferenceSession {
 }
 
 impl DocOriInferenceSession {
+    pub fn load_from_bytes(bytes: &[u8]) -> TractResult<Self> {
+        println!(
+            "[DocOriInfer] Loading doc orientation model from memory ({} bytes)",
+            bytes.len()
+        );
+        let mut inference_model = crate::tract_load::inference_model_from_bytes(bytes)?;
+        Self::prepare_doc_ori_model(inference_model)
+    }
+
     pub fn load(model_path: impl AsRef<Path>) -> TractResult<Self> {
         let model_path = model_path.as_ref();
         println!(
             "[DocOriInfer] Loading PP-LCNet_x1_0_doc_ori model from {:?}",
             model_path
         );
+        let mut inference_model = crate::tract_load::paddle_onnx().model_for_path(model_path)?;
+        Self::prepare_doc_ori_model(inference_model)
+    }
+
+    fn prepare_doc_ori_model(mut inference_model: InferenceModel) -> TractResult<Self> {
         let height = 224;
         let width = 224;
-        let mut inference_model = tract_onnx::onnx()
-            .with_ignore_output_shapes(true)
-            .model_for_path(model_path)?;
         let batch_sym = inference_model.symbol_table.sym("DynamicDimension.0");
         inference_model.set_input_fact(
             0,
@@ -90,7 +103,7 @@ impl DocOriInferenceSession {
             &tensor,
         )?;
         println!("[DocOriInfer] Running inference...");
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let outputs = self.base_model.run(tvec!(tensor.into()))?;
         let duration = start.elapsed();
         println!("[DocOriInfer] Inference time: {:?}", duration);

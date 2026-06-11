@@ -25,21 +25,28 @@ pub struct RecInferenceSession {
 }
 
 impl RecInferenceSession {
+    pub fn load_from_bytes(bytes: &[u8]) -> TractResult<Self> {
+        println!("[RecInfer] Loading recognition model from memory ({} bytes)", bytes.len());
+        let mut inference_model = crate::tract_load::inference_model_from_bytes(bytes)?;
+        Self::prepare_recognition_model(inference_model)
+    }
+
     pub fn load(model_path: impl AsRef<Path>) -> TractResult<Self> {
         let model_path = model_path.as_ref();
         println!("[RecInfer] Loading recognition model from {:?}", model_path);
 
-        let mut inference_model = tract_onnx::onnx()
-            .with_ignore_output_shapes(true)
-            .model_for_path(model_path)?;
+        let mut inference_model = crate::tract_load::paddle_onnx().model_for_path(model_path)?;
+        Self::prepare_recognition_model(inference_model)
+    }
 
-        let batch = inference_model.symbol_table.sym("batch");
+    fn prepare_recognition_model(mut inference_model: InferenceModel) -> TractResult<Self> {
+        // Keep batch fixed at 1 (like DBNet) — symbolic batch breaks tract ConvHir on PP-OCRv5 rec.
         let width = inference_model.symbol_table.sym("width");
         inference_model.set_input_fact(
             0,
             InferenceFact::dt_shape(
                 f32::datum_type(),
-                tvec![batch.into(), TDim::from(3), TDim::from(48), width.into()],
+                tvec![TDim::from(1), TDim::from(3), TDim::from(48), width.into()],
             ),
         )?;
 
@@ -166,19 +173,78 @@ impl RecInferenceSession {
             ),
         )?;
 
-        let plan = model
-            .into_typed()?
-            .into_decluttered()?
-            .into_optimized()?
-            .into_runnable()?;
+        if batch_size != 1 {
+            return Err(anyhow!(
+                "SVTR recognition is compiled with batch size 1, got {}",
+                batch_size
+            )
+            .into());
+        }
 
-        let plan = Arc::new(plan);
-        if let Ok(mut cache) = self.cache.write() {
-            cache.insert((batch_size, width), Arc::clone(&plan));
-        };
+        for candidate in fallback_recognition_widths(width) {
+            if let Ok(cache) = self.cache.read() {
+                if let Some(plan) = cache.get(&(batch_size, candidate)) {
+                    return Ok(Arc::clone(plan));
+                }
+            }
 
-        Ok(plan)
+            let mut candidate_model = self.base_model.clone();
+            candidate_model.set_input_fact(
+                0,
+                InferenceFact::dt_shape(
+                    f32::datum_type(),
+                    tvec![
+                        TDim::from(1),
+                        TDim::from(3),
+                        TDim::from(48),
+                        TDim::from(candidate as i64),
+                    ],
+                ),
+            )?;
+
+            match compile_recognition_runnable(candidate_model) {
+                Ok(plan) => {
+                    let plan = Arc::new(plan);
+                    if let Ok(mut cache) = self.cache.write() {
+                        cache.insert((batch_size, candidate), Arc::clone(&plan));
+                    }
+                    if candidate != width {
+                        println!(
+                            "[RecInfer] Using fallback recognition width {} (requested {})",
+                            candidate, width
+                        );
+                    }
+                    return Ok(plan);
+                }
+                Err(err) => {
+                    println!(
+                        "[RecInfer] Width {} compile failed: {}",
+                        candidate, err
+                    );
+                }
+            }
+        }
+
+        Err(anyhow!(
+            "failed to compile SVTR runnable model for batch {} width {}",
+            batch_size,
+            width
+        )
+        .into())
     }
+}
+
+fn fallback_recognition_widths(width: u32) -> Vec<u32> {
+    let mut widths = vec![width, 320, 256, 224, 192, 160, 128, 96, 64];
+    widths.sort_by(|a, b| b.cmp(a));
+    widths.dedup();
+    widths
+}
+
+fn compile_recognition_runnable(model: InferenceModel) -> TractResult<TypedRunnableModel<TypedModel>> {
+    // PP-OCRv5 mobile SVTR: full declutter/optimize often fails ConvHir on node "Conv.0".
+    // Typed + runnable is enough for inference and matches the historical PoC path.
+    model.into_typed()?.into_runnable()
 }
 
 /// Configuration for recognition post processing (CTC decoding stage).
@@ -296,26 +362,69 @@ mod tests {
             bases.push(env_path.clone());
             bases.push(env_path.join("models"));
         }
+        if let Some(dir) = env::var_os("LIB_KNOW_OCR_MODELS") {
+            bases.push(PathBuf::from(dir));
+        }
 
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        bases.push(manifest.join("../../models/ocr"));
         bases.push(manifest.join("tests").join("fixtures").join("models"));
         bases.push(manifest.join("tests").join("fixtures"));
         bases.push(manifest.join("models"));
 
+        let names = [
+            file_name.to_string(),
+            "PP-OCRv5_mobile_rec_infer.onnx".to_string(),
+            "rec.onnx".to_string(),
+        ];
+
         for base in bases {
             let ppocr_dir = base.join("ppocrv5");
-            let candidate = ppocr_dir.join(file_name);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-
-            let alt = base.join(file_name);
-            if alt.exists() {
-                return Some(alt);
+            for name in &names {
+                let candidate = ppocr_dir.join(name);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+                let alt = base.join(name);
+                if alt.exists() {
+                    return Some(alt);
+                }
             }
         }
 
         None
+    }
+
+    #[test]
+    #[ignore = "manual probe for tract-safe recognition widths"]
+    fn probe_mobile_rec_compile_widths() -> TractResult<()> {
+        let model_path = locate_ppocrv5_asset("rec.onnx")
+            .expect("PP-OCRv5 mobile rec model missing");
+
+        let session = RecInferenceSession::load(model_path)?;
+        let image = gradient_image(400, 200);
+        let preprocessor = RecPreProcessor::new(RecPreProcessorConfig::default());
+
+        for width in (32..=512).step_by(32) {
+            let regions = vec![RecTextRegion {
+                x: 0,
+                y: 0,
+                width: width.min(380),
+                height: 40,
+            }];
+            let batch = preprocessor
+                .process(&image, &regions, &[Rotation::Deg0])
+                .expect("preprocess");
+            let compiled = session.run(&batch);
+            println!(
+                "width {} tensor_w {} => {}",
+                width,
+                batch.tensor.shape()[3],
+                if compiled.is_ok() { "OK" } else { "FAIL" }
+            );
+        }
+
+        Ok(())
     }
 
     #[test]

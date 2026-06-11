@@ -95,32 +95,39 @@ impl DetPreProcessor {
         Self { config }
     }
 
+    pub fn limit_side_len(&self) -> u32 {
+        self.config.limit_side_len
+    }
+
     pub fn process(
         &self,
         image: &DynamicImage,
+    ) -> Result<PreprocessedDetInput, DetPreProcessorError> {
+        self.process_with_limit(image, self.config.limit_side_len)
+    }
+
+    /// Runs detection preprocessing with an explicit long-side limit (multi-scale retry).
+    pub fn process_with_limit(
+        &self,
+        image: &DynamicImage,
+        limit_side_len: u32,
     ) -> Result<PreprocessedDetInput, DetPreProcessorError> {
         let (orig_w, orig_h) = image.dimensions();
         if orig_w == 0 || orig_h == 0 {
             return Err(DetPreProcessorError::EmptyImage);
         }
 
-        let (resized_w, resized_h, scale_ratio) =
-            compute_resized_dims(orig_w, orig_h, self.config.limit_side_len);
+        let (_, _, scale_ratio) = compute_resized_dims(orig_w, orig_h, limit_side_len);
+        let (tensor_w, tensor_h) =
+            detection_tensor_dims(orig_w, orig_h, limit_side_len);
 
-        let resized = if resized_w == orig_w && resized_h == orig_h {
-            image.clone()
-        } else {
-            image.resize_exact(resized_w, resized_h, FilterType::Lanczos3)
-        };
-
+        let resized = image.resize_exact(tensor_w, tensor_h, FilterType::Lanczos3);
         let rgb_image = resized.to_rgb8();
-        let padded_w = round_up_to_multiple(resized_w, 32);
-        let padded_h = round_up_to_multiple(resized_h, 32);
 
-        let mut array_hwc = Array3::<f32>::zeros((padded_h as usize, padded_w as usize, 3));
+        let mut array_hwc = Array3::<f32>::zeros((tensor_h as usize, tensor_w as usize, 3));
 
-        for y in 0..resized_h as usize {
-            for x in 0..resized_w as usize {
+        for y in 0..tensor_h as usize {
+            for x in 0..tensor_w as usize {
                 let pixel = rgb_image.get_pixel(x as u32, y as u32);
                 for c in 0..3 {
                     array_hwc[[y, x, c]] = pixel[c] as f32 / 255.0;
@@ -134,10 +141,19 @@ impl DetPreProcessor {
 
         Ok(PreprocessedDetInput {
             tensor,
-            resized_dims: (padded_w, padded_h),
+            resized_dims: (tensor_w, tensor_h),
             scale_ratio,
         })
     }
+}
+
+/// DBNet tensor width/height snapped to multiples of 32 (tract-safe, no zero padding).
+pub fn detection_tensor_dims(orig_w: u32, orig_h: u32, limit_side_len: u32) -> (u32, u32) {
+    let (resized_w, resized_h, _) = compute_resized_dims(orig_w, orig_h, limit_side_len);
+    (
+        round_up_to_multiple(resized_w, 32).max(32),
+        round_up_to_multiple(resized_h, 32).max(32),
+    )
 }
 
 fn compute_resized_dims(orig_w: u32, orig_h: u32, limit_side_len: u32) -> (u32, u32, f64) {
@@ -169,6 +185,12 @@ fn round_up_to_multiple(value: u32, multiple: u32) -> u32 {
     } else {
         value + multiple - remainder
     }
+}
+
+/// Snap recognition tensor width to tract-safe values (multiples of 32).
+pub fn snap_recognition_width(width: u32, max_width: u32) -> u32 {
+    let snapped = round_up_to_multiple(width.max(32), 32).min(max_width);
+    snapped.max(32)
 }
 
 /// Rectangle specifying the area to crop for recognition preprocessing.
@@ -350,11 +372,12 @@ impl RecPreProcessor {
                 Rotation::Deg270 => cropped.rotate90(),
             };
             let aspect_ratio = cropped.width() as f32 / cropped.height() as f32;
-            let mut target_width = (aspect_ratio * target_height as f32)
-                .round()
-                .clamp(1.0, max_width as f32) as u32;
+            let mut target_width = snap_recognition_width(
+                (aspect_ratio * target_height as f32).round().max(1.0) as u32,
+                max_width,
+            );
             if target_width == 0 {
-                target_width = 1;
+                target_width = 32;
             }
 
             let resized = cropped.resize_exact(target_width, target_height, FilterType::Lanczos3);
@@ -466,6 +489,7 @@ mod tests {
 
         assert_eq!(result.resized_dims, (128, 96));
         assert_eq!(result.tensor.shape(), &[1, 3, 96, 128]);
+        assert_eq!(detection_tensor_dims(123, 77, 960), (128, 96));
         assert!((result.scale_ratio - 1.0).abs() < f64::EPSILON);
     }
 
