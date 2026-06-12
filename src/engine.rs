@@ -684,7 +684,7 @@ impl OcrEngine {
         timings.detection = detection_timings;
 
         let regions = if polygons.is_empty() {
-            address_line_regions(image_dims, 4)
+            address_line_regions(image_dims, 5)
         } else {
             polygons_to_text_regions(&polygons, image_dims)
         };
