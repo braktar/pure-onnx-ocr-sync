@@ -570,6 +570,44 @@ impl OcrEngine {
         Ok(run.results)
     }
 
+    /// Run SVTR recognition on pre-defined horizontal strips (label line OCR).
+    ///
+    /// Skips DBNet detection — used when the host already segmented address lines.
+    pub fn recognize_regions(
+        &self,
+        image: &DynamicImage,
+        regions: &[RecTextRegion],
+    ) -> Result<Vec<OcrResult>, OcrError> {
+        if regions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let region_vec: Vec<RecTextRegion> = regions.to_vec();
+        let (rotations, _) = self
+            .text_line_ori
+            .run_with_timings(image, &region_vec)?;
+        let (sequences, _) = self
+            .recognition
+            .run_lines_sequentially(image, regions, &rotations)?;
+
+        if sequences.len() != regions.len() {
+            return Err(OcrError::PipelineMismatch {
+                detection_regions: regions.len(),
+                recognition_results: sequences.len(),
+            });
+        }
+
+        Ok(regions
+            .iter()
+            .zip(sequences.into_iter())
+            .map(|(region, sequence)| OcrResult {
+                text: sequence.text,
+                confidence: sequence.confidence,
+                bounding_box: region_to_polygon(region),
+            })
+            .collect())
+    }
+
     /// Runs DBNet text detection only (with document orientation correction).
     ///
     /// Tries several long-side limits so tract can compile a working graph and blurry
